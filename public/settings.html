@@ -89,6 +89,38 @@
     <div id="reset-result" class="test-result"></div>
   </div>
 
+  <div class="card" id="backup-card" style="display:none">
+    <div class="section-title">Backup &amp; restore</div>
+    <p class="muted" style="margin-bottom:12px">
+      Downloads a zip of all jobs, attachments (receipts/invoices), encrypted
+      customer passwords, and the encryption key. Treat the file as sensitive —
+      it is equivalent to the live server.
+    </p>
+    <div class="row">
+      <div class="meta">
+        <div class="name">Download backup</div>
+        <div class="note" id="backup-summary">Loading size…</div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="backup-download-btn" type="button">Download backup zip</button>
+    </div>
+    <div class="row">
+      <div class="meta">
+        <div class="name" style="color:#8c1f1f">Restore from backup</div>
+        <div class="note">
+          <strong>Destructive.</strong> Replaces every card, attachment and
+          password with the contents of the chosen zip. Type
+          <code>RESTORE</code> to unlock the button.
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <input type="file" id="backup-restore-file" accept=".zip,application/zip" style="font-size:12px" />
+        <input type="text" id="backup-restore-confirm" placeholder="Type RESTORE" style="width:150px;padding:4px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px" />
+        <button class="btn btn-sm" id="backup-restore-btn" type="button" disabled style="background:#8c1f1f;color:#fff;border:none">Restore</button>
+      </div>
+    </div>
+    <div id="backup-result" class="test-result" style="margin-top:10px"></div>
+  </div>
+
   <div class="card">
     <div class="section-title">About</div>
     <div class="row">

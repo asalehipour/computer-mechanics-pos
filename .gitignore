@@ -8,3 +8,7 @@ dist/
 # passwords, job board with PII, and uploaded PDF attachments. Must never
 # be committed.
 data/
+
+# Local backup output from scripts/backup.sh — contains the same sensitive
+# material as data/ (encryption key, PII, PDFs). Never commit.
+backups/

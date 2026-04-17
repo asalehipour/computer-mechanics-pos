@@ -5,7 +5,8 @@ import fastifySecureSession from '@fastify/secure-session';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { config, isProd } from './config.js';
-import { registerAuth, requireAuth } from './auth.js';
+import { registerAuth, requireAuth, requireAdmin, isAdmin, type SessionUser } from './auth.js';
+import { createBackupBuffer, restoreFromBuffer, backupSummary } from './backup.js';
 import { registerSettings } from './settings.js';
 import { registerWebSocket } from './ws.js';
 import { registerPasswordRoutes, startPurgeTimer } from './passwords.js';
@@ -90,6 +91,62 @@ app.get<{ Params: { entryId: string; attachmentId: string }; Querystring: { inli
       .header('Content-Length', String(result.bytes.length))
       .header('Content-Disposition', `${disposition}; filename="${result.meta.filename}"`);
     return reply.send(result.bytes);
+  },
+);
+
+// ── Backup / restore (admin-only) ────────────────────────────────────────
+// Expose to the Settings UI for ad-hoc backups, plus a summary endpoint the
+// page uses to show current data-dir size. Restore is gated behind a typed
+// confirmation phrase because it wipes all jobs, passwords and attachments.
+
+/** Whether the current session can see the backup panel at all. */
+app.get('/api/admin/status', { preHandler: requireAuth }, async (req) => {
+  const user = req.session.get('user') as SessionUser | undefined;
+  return { isAdmin: isAdmin(user) };
+});
+
+app.get('/api/admin/backup/summary', { preHandler: requireAdmin }, async () => {
+  return await backupSummary();
+});
+
+app.get('/api/admin/backup', { preHandler: requireAdmin }, async (_req, reply) => {
+  const buf = await createBackupBuffer();
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  reply
+    .header('Content-Type', 'application/zip')
+    .header('Content-Length', String(buf.length))
+    .header('Content-Disposition', `attachment; filename="pos-backup-${stamp}.zip"`);
+  return reply.send(buf);
+});
+
+// Accept raw zip bodies on the restore endpoint. Registered at route scope
+// so we don't affect any other route's parsing.
+app.addContentTypeParser(
+  'application/zip',
+  { parseAs: 'buffer' },
+  (_req, body, done) => { done(null, body); },
+);
+
+app.post<{ Querystring: { confirm?: string } }>(
+  '/api/admin/restore',
+  { preHandler: requireAdmin, bodyLimit: 500 * 1024 * 1024 }, // 500 MB ceiling
+  async (req, reply) => {
+    if (req.query.confirm !== 'RESTORE') {
+      return reply.code(400).send({ error: 'missing_confirmation', detail: 'Pass ?confirm=RESTORE to proceed.' });
+    }
+    const body = req.body;
+    if (!Buffer.isBuffer(body)) {
+      return reply.code(400).send({ error: 'bad_body', detail: 'Expected a raw zip body (application/zip).' });
+    }
+    try {
+      const result = await restoreFromBuffer(body);
+      req.log.warn({ fileCount: result.fileCount }, '[admin] Restored from backup — restart recommended');
+      return { ok: true, ...result, note: 'Restore complete. Restart the server to reload in-memory caches.' };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      req.log.error({ err }, '[admin] Restore failed');
+      return reply.code(400).send({ error: 'restore_failed', detail: msg });
+    }
   },
 );
 

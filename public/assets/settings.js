@@ -185,6 +185,83 @@ async function resetStubs() {
   }
 }
 
+// ── Backup & restore (admin-only) ───────────────────────────────────────────
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function loadBackupSummary() {
+  const summary = await api('GET', '/api/admin/backup/summary');
+  const el = document.getElementById('backup-summary');
+  if (el) el.textContent = `${summary.fileCount} files · ${fmtBytes(summary.totalBytes)}`;
+}
+
+function downloadBackup() {
+  // Simple nav — lets the browser handle the save dialog + filename header.
+  window.location.href = '/api/admin/backup';
+}
+
+async function restoreBackup() {
+  const fileInput = document.getElementById('backup-restore-file');
+  const confirmInput = document.getElementById('backup-restore-confirm');
+  const resultEl = document.getElementById('backup-result');
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    resultEl.className = 'test-result show error';
+    resultEl.textContent = 'Pick a backup zip first.';
+    return;
+  }
+  if (confirmInput.value !== 'RESTORE') {
+    resultEl.className = 'test-result show error';
+    resultEl.textContent = 'Type RESTORE exactly to confirm.';
+    return;
+  }
+  if (!window.confirm(
+    `Restore from ${file.name}?\n\n` +
+    `This will REPLACE every job card, attachment, password and setting with the contents of the zip. ` +
+    `There is no undo. The server will need a restart afterwards.`,
+  )) return;
+
+  resultEl.className = 'test-result show';
+  resultEl.textContent = 'Uploading and restoring…';
+  try {
+    const res = await fetch('/api/admin/restore?confirm=RESTORE', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: file,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+    resultEl.className = 'test-result show ok';
+    resultEl.textContent = `Restored ${data.fileCount} files. ${data.note ?? ''}`;
+    confirmInput.value = '';
+    fileInput.value = '';
+    document.getElementById('backup-restore-btn').disabled = true;
+    loadBackupSummary();
+  } catch (err) {
+    resultEl.className = 'test-result show error';
+    resultEl.textContent = err.message;
+  }
+}
+
+function wireBackupPanel() {
+  const card = document.getElementById('backup-card');
+  const confirmInput = document.getElementById('backup-restore-confirm');
+  const restoreBtn = document.getElementById('backup-restore-btn');
+  document.getElementById('backup-download-btn')?.addEventListener('click', downloadBackup);
+  confirmInput?.addEventListener('input', () => {
+    restoreBtn.disabled = confirmInput.value !== 'RESTORE';
+  });
+  restoreBtn?.addEventListener('click', restoreBackup);
+  card.style.display = '';
+  loadBackupSummary().catch(err => {
+    const el = document.getElementById('backup-summary');
+    if (el) el.textContent = `Could not load size: ${err.message}`;
+  });
+}
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 async function boot() {
   // Wire up the audit + dev-tool buttons programmatically. Inline onclick=""
@@ -193,15 +270,17 @@ async function boot() {
   document.getElementById('audit-clear-btn')?.addEventListener('click', clearAudit);
   document.getElementById('reset-stubs-btn')?.addEventListener('click', resetStubs);
 
-  const [meRes, settings] = await Promise.all([
+  const [meRes, settings, adminStatus] = await Promise.all([
     fetch('/api/me').then(r => r.json()),
     api('GET', '/api/settings'),
+    api('GET', '/api/admin/status').catch(() => ({ isAdmin: false })),
   ]);
   document.getElementById('me-name').textContent = meRes.user?.name ?? '';
   renderConnections(settings);
   renderFlags(settings);
   refreshAudit();
   setInterval(refreshAudit, 2000);
+  if (adminStatus.isAdmin) wireBackupPanel();
 }
 
 boot().catch(err => {

@@ -163,6 +163,31 @@ export function isSessionCurrent(user: SessionUser | undefined): boolean {
   return currentNonce.get(user.oid) === user.sessionNonce;
 }
 
+/**
+ * True if the signed-in user is on the ADMIN_EMAILS allowlist. Used to gate
+ * destructive endpoints (backup download, restore). Case-insensitive match.
+ */
+export function isAdmin(user: SessionUser | undefined): boolean {
+  if (!user) return false;
+  const email = (user.email || '').toLowerCase();
+  return config.adminEmails.includes(email);
+}
+
+/**
+ * Prehandler that 403s unless the caller is signed in AND on the admin list.
+ * Mirrors requireAuth's redirect behaviour for browser routes but returns
+ * JSON 403 for API routes so fetch() callers get a clean error shape.
+ */
+export async function requireAdmin(req: FastifyRequest, reply: FastifyReply) {
+  const user = req.session.get('user');
+  if (!user || !isSessionCurrent(user)) {
+    return reply.code(401).send({ error: 'not_authenticated' });
+  }
+  if (!isAdmin(user)) {
+    return reply.code(403).send({ error: 'not_admin' });
+  }
+}
+
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const user = req.session.get('user');
   if (!user) {
