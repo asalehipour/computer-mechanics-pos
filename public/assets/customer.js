@@ -1,8 +1,63 @@
-// Customer-facing display — read-only mirror driven by WebSocket broadcasts.
+// Customer-facing display — primarily a mirror, but the intake screen lets
+// the customer type their own name/phone/email etc. (staff can also edit
+// from their side; both sides sync live via the same `updateField` WS
+// message). Everything past intake is read-only.
 
 const $stage = document.getElementById('stage');
 let job = null;
 let ws = null;
+
+// Deep-merge echoes in place so that while the customer is typing in an
+// input, an incoming WS state snapshot doesn't replace the DOM and clobber
+// their caret / partially-typed value. Only re-render when something
+// structural changes (step, route, signature request, etc.).
+function mergeInPlace(dest, src) {
+  if (!dest || !src) return;
+  for (const key of Object.keys(src)) {
+    const dv = dest[key];
+    const sv = src[key];
+    if (Array.isArray(dv) && Array.isArray(sv) && dv.length === sv.length) {
+      for (let i = 0; i < dv.length; i++) {
+        if (dv[i] && sv[i] && typeof dv[i] === 'object') mergeInPlace(dv[i], sv[i]);
+        else dv[i] = sv[i];
+      }
+    } else if (dv && sv && typeof dv === 'object' && typeof sv === 'object' && !Array.isArray(sv)) {
+      mergeInPlace(dv, sv);
+    } else {
+      dest[key] = sv;
+    }
+  }
+}
+
+// Which fields of which top-level keys are rendered as plain text inside
+// inputs — safe to just update the DOM value instead of re-rendering. All
+// other changes (step, signatureRequest, route, etc.) are structural.
+function isStructural(prev, next) {
+  if (!prev || !next) return true;
+  if (prev.id !== next.id) return true;
+  if (prev.step !== next.step) return true;
+  if ((prev.signatureRequest?.kind ?? null) !== (next.signatureRequest?.kind ?? null)) return true;
+  if (Boolean(prev.signatureRequest) !== Boolean(next.signatureRequest)) return true;
+  if ((prev.checkout?.state ?? null) !== (next.checkout?.state ?? null)) return true;
+  if ((prev.pickup?.loadState ?? null) !== (next.pickup?.loadState ?? null)) return true;
+  if ((prev.pickup?.selectedInvoiceId ?? null) !== (next.pickup?.selectedInvoiceId ?? null)) return true;
+  // Repair / product / onTheSpot line count changes restructure the mirror.
+  if ((prev.repair?.lines?.length ?? 0) !== (next.repair?.lines?.length ?? 0)) return true;
+  if ((prev.product?.lines?.length ?? 0) !== (next.product?.lines?.length ?? 0)) return true;
+  if ((prev.pickup?.extraLines?.length ?? 0) !== (next.pickup?.extraLines?.length ?? 0)) return true;
+  return false;
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+function sendUpdateField(field, value) {
+  try { ws?.send(JSON.stringify({ type: 'updateField', field, value })); }
+  catch { /* swallow — next state will resync */ }
+}
+const sendUpdateFieldDebounced = debounce(sendUpdateField, 200);
 
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -14,15 +69,41 @@ function connectWs() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'state') {
-      job = msg.job;
+      const next = msg.job;
       if (window.__cmDebugSig) console.log('[customer] state received', {
-        step: job?.step,
-        signatureRequest: job?.signatureRequest,
+        step: next?.step,
+        signatureRequest: next?.signatureRequest,
       });
-      render();
+      if (isStructural(job, next)) {
+        job = next;
+        render();
+      } else if (job && next) {
+        // Non-structural echo — merge in place so focused inputs aren't lost.
+        mergeInPlace(job, next);
+        syncIntakeInputs();
+      } else {
+        job = next;
+        render();
+      }
     }
   });
   ws.addEventListener('close', () => setTimeout(connectWs, 500));
+}
+
+// When the staff side updates a field while the customer is on the intake
+// screen, refresh each input's value *unless* that input currently has
+// focus (never stomp the user's own typing). Called after a merge-in-place.
+function syncIntakeInputs() {
+  if (job?.step !== 'intake') return;
+  const c = job.customer || {};
+  const fields = ['firstName', 'lastName', 'phone', 'email', 'postcode', 'company'];
+  for (const f of fields) {
+    const el = document.querySelector(`[data-intake-field="${f}"]`);
+    if (!el) continue;
+    if (document.activeElement === el) continue;
+    const v = c[f] ?? '';
+    if (el.value !== v) el.value = v;
+  }
 }
 
 function h(tag, attrs = {}, ...children) {
@@ -38,8 +119,15 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+function brandHeader() {
+  return h('div', { class: 'stage-brand' },
+    h('img', { src: '/assets/logo.jpg', alt: 'Computer Mechanics', class: 'stage-brand-logo' }),
+  );
+}
+
 function viewStandby() {
   return h('div', { class: 'stage-standby' },
+    brandHeader(),
     h('h1', {}, 'Welcome to Computer Mechanics'),
     h('p', {}, 'Please wait — our team will be with you shortly.'),
     h('p', { class: 'muted' }, 'This screen will light up when a staff member starts your job.'),
@@ -56,29 +144,58 @@ function row(label, value) {
 
 function viewIntake(job) {
   const c = job.customer;
-  const greeting = c.firstName
-    ? `Hi ${c.firstName}!`
-    : 'Welcome!';
+
+  // Editable field. The customer can fill these in themselves; staff can
+  // also type on their side and both stay in sync via `updateField`.
+  // `data-intake-field` lets syncIntakeInputs() refresh the value on echoes
+  // without stomping a focused input.
+  const field = (name, label, type = 'text', placeholder = '') => {
+    const input = h('input', {
+      type,
+      name,
+      placeholder,
+      value: c[name] ?? '',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      class: 'intake-input',
+      'data-intake-field': name,
+    });
+    input.addEventListener('input', (e) => {
+      // Update local state immediately so a later merge-in-place doesn't
+      // overwrite our own value if it arrives before the debounced send.
+      if (job?.customer) job.customer[name] = e.target.value;
+      sendUpdateFieldDebounced(name, e.target.value);
+    });
+    return h('div', { class: 'intake-field' },
+      h('label', { class: 'intake-label' }, label),
+      input,
+    );
+  };
 
   return h('div', { class: 'stage-intake' },
-    h('h1', {}, greeting),
-    h('p', { class: 'greeting-sub' }, `Let's get your device booked in.`),
-    h('div', { class: 'customer-summary' },
+    brandHeader(),
+    h('h1', {}, `Welcome${c.firstName ? `, ${c.firstName}` : ''}!`),
+    h('p', { class: 'greeting-sub' }, `Please check your details below. You can type them in yourself, or our team will help.`),
+    h('div', { class: 'customer-summary customer-summary-form' },
       h('h2', {}, 'Your details'),
-      h('div', { class: 'rows' },
-        row('Name', [c.firstName, c.lastName].filter(Boolean).join(' ')),
-        row('Phone', c.phone),
-        row('Email', c.email),
-        row('Postcode', c.postcode),
-        c.company ? row('Company', c.company) : null,
-        c.hasComputerPassword ? row('Computer password', 'Recorded ✓') : null,
+      h('div', { class: 'intake-grid' },
+        field('firstName', 'First name', 'text', 'e.g. Jamie'),
+        field('lastName', 'Last name', 'text', 'e.g. Smith'),
+        field('phone', 'Phone', 'tel', '04…'),
+        field('email', 'Email', 'email', 'name@example.com'),
+        field('postcode', 'Postcode', 'text', '3000'),
+        field('company', 'Company (optional)', 'text', ''),
       ),
+      c.hasComputerPassword
+        ? h('p', { class: 'intake-pw-note' }, '🔒 Computer password recorded with our team.')
+        : null,
     ),
   );
 }
 
 function viewThanks(job) {
   return h('div', { class: 'stage-thanks' },
+    brandHeader(),
     h('h1', {}, `Thanks, ${job.customer.firstName || 'there'}!`),
     h('p', {}, 'Please wait a moment while we continue.'),
   );

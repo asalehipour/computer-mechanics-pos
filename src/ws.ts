@@ -225,9 +225,16 @@ export async function registerWebSocket(app: FastifyInstance) {
           break;
         }
         case 'updateField': {
-          if (conn.audience !== 'staff') return;
           if (typeof msg.field !== 'string' || !isCustomerField(msg.field)) return;
           const v = msg.value;
+          // Customer-originated updates are allowed for the self-entry fields
+          // only — never passwords or device intent (both are staff-driven).
+          const CUSTOMER_SELF_ENTRY = new Set<string>([
+            'firstName', 'lastName', 'phone', 'email', 'postcode', 'company',
+          ]);
+          if (conn.audience === 'customer' && !CUSTOMER_SELF_ENTRY.has(msg.field)) return;
+          if (conn.audience !== 'staff' && conn.audience !== 'customer') return;
+
           if (msg.field === 'hasComputerPassword') {
             updateCustomerField(uk, 'hasComputerPassword', Boolean(v));
           } else if (msg.field === 'deviceIntent') {

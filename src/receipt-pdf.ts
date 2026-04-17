@@ -110,6 +110,16 @@ function shortServiceNum(jobId: string): string {
   return (jobId || '').slice(-6).toUpperCase();
 }
 
+/**
+ * Display label for the receipt header. Prefers the human-friendly
+ * displayNumber (#1051…) and falls back to a 6-char slice of the opaque
+ * jobId for legacy jobs that predate the counter.
+ */
+function serviceDisplay(job: Job): string {
+  if (job.displayNumber != null) return String(job.displayNumber);
+  return shortServiceNum(job.id);
+}
+
 function fmtDate(iso: string | undefined): string {
   if (!iso) return '';
   try {
@@ -154,7 +164,7 @@ const CONTENT_W = PAGE_RIGHT - PAGE_LEFT;
 
 function renderReceipt(doc: PDFKit.PDFDocument, opts: GenerateReceiptOptions): void {
   const { job, invoiceNumbers } = opts;
-  const serviceNum = shortServiceNum(job.id);
+  const serviceNum = serviceDisplay(job);
   const customerName = [job.customer.firstName, job.customer.lastName].filter(Boolean).join(' ');
   const totals = totalsFor(job);
   const services = servicesText(job);

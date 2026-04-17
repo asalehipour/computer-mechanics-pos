@@ -11,6 +11,7 @@ import { registerSettings } from './settings.js';
 import { registerWebSocket } from './ws.js';
 import { registerPasswordRoutes, startPurgeTimer } from './passwords.js';
 import { initJobBoard, searchCustomers, readAttachmentBytes } from './job-board.js';
+import { initCounter } from './counter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(__dirname, '..', 'public');
@@ -47,6 +48,7 @@ registerSettings(app);
 registerPasswordRoutes(app);
 startPurgeTimer();
 await initJobBoard();
+initCounter();
 await registerWebSocket(app);
 
 app.get('/', async (_req, reply) => {

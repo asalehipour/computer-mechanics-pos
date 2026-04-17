@@ -91,15 +91,18 @@ function methodLabel(m) {
 }
 
 function intentLabel(v) {
-  if (v === 'taking') return 'Taking while waiting for parts';
-  if (v === 'leaving') return 'Leaving with us';
+  // Data keys are preserved ('leaving' = device stays at shop, 'taking' =
+  // customer has it with them) so existing job-board entries still render;
+  // the labels are the friendlier "Where is the device?" wording.
+  if (v === 'leaving') return 'In store';
+  if (v === 'taking') return 'With the customer';
   if (v === 'na') return 'N/A';
   return '—';
 }
 
 const INTENT_OPTIONS = [
-  { key: 'leaving', label: 'Leaving with us' },
-  { key: 'taking',  label: 'Taking while waiting' },
+  { key: 'leaving', label: 'In store' },
+  { key: 'taking',  label: 'With the customer' },
   { key: 'na',      label: 'N/A' },
 ];
 
@@ -166,9 +169,10 @@ function matchesSearch(entry, q) {
   if (!q) return true;
   const query = q.trim().toLowerCase();
   if (!query) return true;
-  // Exact/partial job id — tolerate a leading '#'
+  // Exact/partial job id OR human display number (e.g. "#1051" / "1051")
   const jobNeedle = query.replace(/^#/, '');
   if (entry.jobId && String(entry.jobId).toLowerCase().includes(jobNeedle)) return true;
+  if (entry.displayNumber != null && String(entry.displayNumber).includes(jobNeedle)) return true;
   // Customer name / email / device model
   if ((entry.customerName || '').toLowerCase().includes(query)) return true;
   if ((entry.customerEmail || '').toLowerCase().includes(query)) return true;
@@ -244,7 +248,7 @@ function renderCard(entry) {
   },
     h('div', { class: 'board-card-top' },
       h('span', { class: 'board-card-emoji' }, entry.deviceEmoji || '💻'),
-      h('span', { class: 'board-card-id' }, `#${entry.jobId}`),
+      h('span', { class: 'board-card-id' }, `#${entry.displayNumber ?? entry.jobId}`),
       entry.parts?.length
         ? h('span', { class: 'board-card-parts', title: `${entry.parts.length} part(s) on order` },
             '📦 ', String(entry.parts.length))
@@ -396,7 +400,7 @@ function renderDrawer(entry) {
         metaRow('Flow', flowLabel(entry.flow)),
         metaRow('Device', entry.deviceModel || '—'),
         h('div', { class: 'drawer-meta-row' },
-          h('span', { class: 'drawer-meta-label' }, 'Device handling'),
+          h('span', { class: 'drawer-meta-label' }, 'Where is the device?'),
           h('span', { class: 'drawer-meta-value' }, intentLabel(entry.deviceIntent)),
         ),
         metaRow('Invoices', (entry.invoiceNumbers || []).join(', ') || '—'),
@@ -578,7 +582,7 @@ function renderDrawer(entry) {
           h('div', { class: 'drawer-emoji' }, entry.deviceEmoji || '💻'),
           h('div', {},
             h('div', { class: 'drawer-title' }, entry.customerName || '—'),
-            h('div', { class: 'drawer-sub' }, `#${entry.jobId} · ${entry.deviceModel || 'No device'}`),
+            h('div', { class: 'drawer-sub' }, `#${entry.displayNumber ?? entry.jobId} · ${entry.deviceModel || 'No device'}`),
           ),
         ),
         h('button', { class: 'drawer-close', type: 'button', onclick: closeDrawer }, '×'),
@@ -598,7 +602,7 @@ function renderDrawer(entry) {
             meta,
           ),
           h('div', { class: 'drawer-section' },
-            h('h4', {}, 'Device handling'),
+            h('h4', {}, 'Where is the device?'),
             intentPicker,
           ),
           passwordSection,

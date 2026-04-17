@@ -123,6 +123,11 @@ h1 {
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  /* Pin to the right regardless of whether .topbar-center has content.
+     On the dashboard the center slot is empty and on some layouts the
+     nav would drift left; margin-left:auto guarantees consistent
+     right-alignment across every page. */
+  margin-left: auto;
 }
 .topbar-link {
   display: inline-flex;

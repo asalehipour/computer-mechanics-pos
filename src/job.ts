@@ -20,6 +20,7 @@ import {
   type BoardFlow,
 } from './job-board.js';
 import { generateReceiptPdf } from './receipt-pdf.js';
+import { nextJobNumber } from './counter.js';
 
 export type Route = 'repair' | 'product' | 'on_the_spot' | 'pickup';
 export type Step =
@@ -306,6 +307,13 @@ export interface JobSignatures {
 
 export interface Job {
   id: string;
+  /**
+   * Human-friendly sequential number (1051, 1052, …). Used as the public
+   * "Service Number" on receipts, customer emails, and the job board. Kept
+   * alongside the opaque `id` rather than replacing it so existing jobs
+   * loaded from older data files (where this was undefined) still work.
+   */
+  displayNumber: number;
   step: Step;
   customer: CustomerDetails;
   contactId: string | null;
@@ -386,6 +394,7 @@ function withJob(userKey: string, fn: (j: Job) => Job): Job | null {
 export function startNewJob(userKey: string, staff: { name: string; email: string }): Job {
   const job: Job = {
     id: shortId(),
+    displayNumber: nextJobNumber(),
     step: 'intake',
     customer: { ...EMPTY_CUSTOMER },
     contactId: null,
@@ -1169,6 +1178,7 @@ export async function checkoutConfirm(userKey: string): Promise<Job | null> {
       const amountPaid = method === 'pay_later' ? 0 : amountDueTodayValue;
       const createInput = {
         jobId: job.id,
+        displayNumber: job.displayNumber,
         customerName: `${job.customer.firstName} ${job.customer.lastName}`.trim(),
         customerEmail: job.customer.email,
         customerPhone: job.customer.phone,
@@ -1209,10 +1219,11 @@ export async function checkoutConfirm(userKey: string): Promise<Job | null> {
           cashTendered,
           changeGiven,
         });
+        const serviceLabel = job.displayNumber ? `#${job.displayNumber}` : job.id;
         await boardAddAttachment(boardEntry.id, {
           kind: 'receipt',
-          name: `Receipt — Job ${job.id}`,
-          filename: `receipt-${job.id}.pdf`,
+          name: `Receipt — Job ${serviceLabel}`,
+          filename: `receipt-${job.displayNumber ?? job.id}.pdf`,
           data: receiptPdf,
         });
         for (const inv of pdfAttachments) {

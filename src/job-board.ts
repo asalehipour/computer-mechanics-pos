@@ -92,8 +92,15 @@ export interface BoardAttachment {
 
 export interface BoardEntry {
   id: string;
-  /** Short 4-char job id from the originating Job (for display). */
+  /** Short 4-char job id from the originating Job (kept for back-compat). */
   jobId: string;
+  /**
+   * Human-friendly sequential number (1051, 1052…). Shown everywhere the
+   * card is referenced — drawer header, board chip, receipts, emails.
+   * Older entries created before this field existed have `undefined` and
+   * the UI falls back to the opaque jobId for those.
+   */
+  displayNumber?: number;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -250,6 +257,7 @@ export function getAllEntriesSync(): BoardEntry[] {
 
 export interface CreateEntryInput {
   jobId: string;
+  displayNumber?: number;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -283,6 +291,7 @@ export async function createEntry(input: CreateEntryInput): Promise<BoardEntry> 
   const entry: BoardEntry = {
     id: randomUUID(),
     jobId: input.jobId,
+    displayNumber: input.displayNumber,
     customerName: input.customerName,
     customerEmail: input.customerEmail,
     customerPhone: input.customerPhone,
@@ -335,6 +344,10 @@ export async function completeEntryForPickup(
         if (!match.invoiceNumbers.includes(inv)) match.invoiceNumbers.push(inv);
       }
       match.amountPaid += input.amountPaid;
+      // Back-fill the display number on legacy cards if we now have one.
+      if (match.displayNumber == null && input.displayNumber != null) {
+        match.displayNumber = input.displayNumber;
+      }
       await persist();
       emit();
       return match;

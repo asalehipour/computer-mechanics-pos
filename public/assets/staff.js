@@ -360,12 +360,12 @@ function viewIntake(job) {
       ),
 
       h('div', { style: 'margin-top:16px;padding-top:16px;border-top:1px solid var(--border)' },
-        h('div', { class: 'intent-label' }, 'Device handling'),
-        h('div', { class: 'intent-sub' }, 'If parts need to be ordered, what will the customer do?'),
+        h('div', { class: 'intent-label' }, 'Where is the device?'),
+        h('div', { class: 'intent-sub' }, 'Is the customer leaving the device with us, or taking it with them?'),
         h('div', { class: 'intent-btns' },
           ...[
-            { key: 'leaving', label: 'Leaving device with us' },
-            { key: 'taking', label: 'Taking device while waiting' },
+            { key: 'leaving', label: 'In store' },
+            { key: 'taking', label: 'With the customer' },
             { key: 'na', label: 'N/A' },
           ].map(opt => h('button', {
             type: 'button',
@@ -1104,8 +1104,11 @@ function receiptDateStr(job) {
 }
 
 function receiptJobNum(job) {
-  // Short display number — use the last 6 chars of the job id.
-  return (job.id || '').slice(-6).toUpperCase();
+  // Prefer the human-friendly sequential displayNumber (#1051…). Fall back
+  // to the last 6 chars of the opaque job id for jobs started before the
+  // counter existed (so old receipts still render something sensible).
+  if (job?.displayNumber != null) return String(job.displayNumber);
+  return (job?.id || '').slice(-6).toUpperCase();
 }
 
 function buildReceiptEl(job) {

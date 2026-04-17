@@ -2,7 +2,10 @@
 
 .board-body {
   background: var(--bg);
-  min-height: 100vh;
+  /* Use an exact viewport height (not min-height) so .board-col-body's
+     overflow-y:auto has something to clamp against. With min-height the
+     body could grow with content and the inner columns would never scroll. */
+  height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -737,8 +740,38 @@
   display: flex;
   justify-content: flex-end;
 }
-.drawer-delete {
+
+/* Compact Edit / Delete buttons on the job card drawer. These override the
+   pill-shaped .btn defaults so they match the smaller language used by
+   .topbar-btn and other inline secondary actions. */
+.btn.drawer-edit-toggle,
+.btn.drawer-delete {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 7px;
+  line-height: 1;
+  min-width: 0;
+  margin-left: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.btn.drawer-edit-toggle:hover {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: var(--text-tertiary);
+  color: var(--text);
+}
+.btn.drawer-delete {
   color: #c94a4a;
+  border-color: rgba(201, 74, 74, 0.3);
+}
+.btn.drawer-delete:hover {
+  background: rgba(201, 74, 74, 0.08);
+  border-color: #c94a4a;
+  color: #a53232;
 }
 
 /* ── Scrollbar polish (webkit only) ─────────────────────────────────────── */
