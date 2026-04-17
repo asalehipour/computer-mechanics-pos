@@ -120,7 +120,16 @@ export function registerAuth(app: FastifyInstance) {
     return reply.redirect(returnTo);
   });
 
-  app.post('/auth/logout', async (req, reply) => {
+  // The topbar uses a plain HTML form (POST application/x-www-form-urlencoded).
+  // Fastify has no built-in parser for that content type and returns 415 before
+  // the handler runs, so register a no-op parser — we don't need the body, just
+  // the session cookie. Also accept GET as a friendly fallback.
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_req, _body, done) => { done(null, {}); },
+  );
+  const doLogout = async (req: FastifyRequest, reply: FastifyReply) => {
     const user = req.session.get('user');
     if (user && currentNonce.get(user.oid) === user.sessionNonce) {
       // Only clear the nonce if this session was the winning one — avoids a
@@ -129,7 +138,9 @@ export function registerAuth(app: FastifyInstance) {
     }
     req.session.delete();
     return reply.redirect('/');
-  });
+  };
+  app.post('/auth/logout', doLogout);
+  app.get('/auth/logout', doLogout);
 
   app.get('/api/me', async (req, reply) => {
     const user = req.session.get('user');
