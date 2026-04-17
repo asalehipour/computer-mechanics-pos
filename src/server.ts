@@ -41,6 +41,16 @@ await app.register(fastifySecureSession, {
 await app.register(fastifyStatic, {
   root: assetsDir,
   prefix: '/assets/',
+  // Force revalidation on every request. Without this, fastify-static sends
+  // Cache-Control: max-age=14400 which means browsers serve a stale copy of
+  // customer.js / staff.js for up to 4 hours after a deploy — the user sees
+  // "I pushed but nothing changed" until they hard-refresh. With no-cache the
+  // browser still revalidates via ETag (304 when unchanged) so the network
+  // cost is trivial, and every deploy lands instantly.
+  cacheControl: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+  },
 });
 
 registerAuth(app);
