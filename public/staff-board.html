@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Job Board · Computer Mechanics POS</title>
+<link rel="stylesheet" href="/assets/style.css" />
+<link rel="stylesheet" href="/assets/staff-board.css" />
+</head>
+<body class="board-body">
+<header class="topbar">
+  <div class="topbar-brand">
+    <strong>Computer Mechanics POS</strong>
+  </div>
+  <div class="topbar-center board-search">
+    <input
+      id="board-search"
+      type="search"
+      placeholder="Search name, phone, or #job…"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <span id="board-search-count" class="board-search-count"></span>
+  </div>
+  <nav class="topbar-nav">
+    <a href="/staff" class="topbar-link">Dashboard</a>
+    <a href="/staff/board" class="topbar-link active">Job Board</a>
+    <a href="/settings" class="topbar-link">Settings</a>
+  </nav>
+  <div class="topbar-user">
+    <span id="conn-indicator" class="conn-dot offline" title="Connecting…"></span>
+    <span id="me-name" class="topbar-me">…</span>
+    <form action="/auth/logout" method="post" class="topbar-logout">
+      <button class="topbar-btn" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+
+<div id="board-root" class="board-root"></div>
+<div id="drawer-root"></div>
+
+<script type="module" src="/assets/staff-board.js"></script>
+</body>
+</html>

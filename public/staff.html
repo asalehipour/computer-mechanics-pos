@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Staff · Computer Mechanics POS</title>
+<link rel="stylesheet" href="/assets/style.css" />
+<link rel="stylesheet" href="/assets/staff.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-brand">
+    <strong>Computer Mechanics POS</strong>
+    <span id="job-badge" class="badge" style="display:none"></span>
+  </div>
+  <div class="topbar-center"></div>
+  <nav class="topbar-nav">
+    <a href="/staff" class="topbar-link active">Dashboard</a>
+    <a href="/staff/board" class="topbar-link">Job Board</a>
+    <a href="/settings" class="topbar-link">Settings</a>
+  </nav>
+  <div class="topbar-user">
+    <span id="conn-indicator" class="conn-dot offline" title="Connecting…"></span>
+    <span id="me-name" class="topbar-me">…</span>
+    <form action="/auth/logout" method="post" class="topbar-logout">
+      <button class="topbar-btn" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+
+<div id="app" class="container"></div>
+
+<script type="module" src="/assets/staff.js"></script>
+</body>
+</html>

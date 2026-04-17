@@ -1,0 +1,235 @@
+/* Computer Mechanics POS — shared design tokens (extracted from job-intake-form) */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --text: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #86868b;
+  --accent: #0071e3;
+  --accent-hover: #0077ED;
+  --border: rgba(0,0,0,0.08);
+  --green: #34c759;
+  --red: #ff3b30;
+  --radius: 12px;
+  --radius-lg: 20px;
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  font-family: var(--font);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 4rem;
+}
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 2rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04);
+  margin-bottom: 1.25rem;
+}
+
+h1 {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin-bottom: 0.5rem;
+}
+
+.sub {
+  font-size: 17px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 2rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 22px;
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 600;
+  border: none;
+  border-radius: 980px;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.05s;
+  text-decoration: none;
+}
+.btn:active { transform: scale(0.98); }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { opacity: 0.9; }
+.btn-ghost {
+  background: transparent;
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Topbar ──────────────────────────────────────────────────────────────
+   Consistent across every authenticated page (staff, staff-board, settings).
+   Structure: [brand] [flexible center slot] [nav pills] [user + sign out].
+   Fixed height so layouts below don't jump between pages. */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 20px;
+  height: 56px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.topbar-brand strong { font-weight: 600; }
+
+.topbar-center {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.topbar-link {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: 8px;
+  transition: background 0.12s, color 0.12s;
+}
+.topbar-link:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text);
+}
+.topbar-link.active {
+  background: rgba(0, 113, 227, 0.1);
+  color: var(--accent);
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+  height: 32px;
+}
+.topbar-me {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-logout { display: inline-flex; }
+.topbar-btn {
+  height: 30px;
+  padding: 0 12px;
+  font-family: var(--font, inherit);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.topbar-btn:hover {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: var(--text-tertiary);
+  color: var(--text);
+}
+
+/* Shared connection dot (green when connected, red + pulse when offline). */
+.conn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green, #2ea44f);
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.conn-dot.offline {
+  background: var(--red, #c94a4a);
+  animation: conn-pulse 1s ease-in-out infinite;
+}
+@keyframes conn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@media (max-width: 760px) {
+  .topbar { gap: 10px; padding: 0 12px; }
+  .topbar-brand strong { display: none; }
+  .topbar-me { display: none; }
+  .topbar-user { padding-left: 10px; }
+  .topbar-link { padding: 0 10px; font-size: 12px; }
+}
+
+.muted { color: var(--text-tertiary); font-size: 13px; }
+
+.badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 980px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #e8f2fc;
+  color: #1a4a7a;
+}
+
+.customer-stage {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+.customer-stage h1 { font-size: 48px; }
+.customer-stage p { font-size: 20px; color: var(--text-secondary); margin-top: 12px; }

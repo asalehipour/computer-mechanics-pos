@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Settings · Computer Mechanics POS</title>
+<link rel="stylesheet" href="/assets/style.css" />
+<style>
+.row { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid var(--border); gap: 12px; }
+.row:last-child { border-bottom: none; }
+.row .meta { flex: 1; }
+.row .name { font-weight: 600; font-size: 15px; }
+.row .note { font-size: 13px; color: var(--text-tertiary); margin-top: 2px; }
+.status { font-size: 12px; padding: 3px 10px; border-radius: 980px; font-weight: 600; }
+.status.stub { background: #fff3cd; color: #7a5b00; }
+.status.live { background: #d4edda; color: #155724; }
+.status.error { background: var(--red-bg, #fdecea); color: var(--red-text, #8c1f1f); }
+.btn-sm { padding: 6px 14px; font-size: 13px; }
+.toggle { position: relative; display: inline-block; width: 44px; height: 26px; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle .slider { position: absolute; cursor: pointer; inset: 0; background: #d1d1d6; border-radius: 34px; transition: .2s; }
+.toggle .slider::before { content: ''; position: absolute; height: 20px; width: 20px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+.toggle input:checked + .slider { background: var(--accent); }
+.toggle input:checked + .slider::before { transform: translateX(18px); }
+.toggle input:disabled + .slider { opacity: 0.4; cursor: not-allowed; }
+.audit-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.audit-table th { text-align: left; font-weight: 600; color: var(--text-secondary); padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.audit-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.audit-table tr:last-child td { border-bottom: none; }
+.audit-table .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.audit-table .ok { color: #155724; }
+.audit-table .error { color: #8c1f1f; }
+.audit-empty { color: var(--text-tertiary); font-size: 13px; text-align: center; padding: 20px; }
+.section-title { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+.test-result { font-size: 12px; padding: 6px 10px; border-radius: 8px; margin-top: 8px; display: none; font-family: ui-monospace, monospace; }
+.test-result.show { display: block; }
+.test-result.ok { background: #d4edda; color: #155724; }
+.test-result.error { background: #fdecea; color: #8c1f1f; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-brand">
+    <strong>Computer Mechanics POS</strong>
+  </div>
+  <div class="topbar-center"></div>
+  <nav class="topbar-nav">
+    <a href="/staff" class="topbar-link">Dashboard</a>
+    <a href="/staff/board" class="topbar-link">Job Board</a>
+    <a href="/settings" class="topbar-link active">Settings</a>
+  </nav>
+  <div class="topbar-user">
+    <span id="me-name" class="topbar-me">…</span>
+    <form action="/auth/logout" method="post" class="topbar-logout">
+      <button class="topbar-btn" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+
+<div class="container">
+  <h1>Settings</h1>
+  <p class="sub">Connection status, feature flags, and recent integration activity.</p>
+
+  <div class="card">
+    <div class="section-title">Connections</div>
+    <div id="connections"></div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Feature flags</div>
+    <div id="flags"></div>
+  </div>
+
+  <div class="card">
+    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Recent integration activity</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" id="audit-refresh-btn" type="button">Refresh</button>
+        <button class="btn btn-ghost btn-sm" id="audit-clear-btn" type="button">Clear</button>
+      </div>
+    </div>
+    <div id="audit"></div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Dev tools</div>
+    <p class="muted" style="margin-bottom:10px">Wipe all in-memory stub state (contacts, invoices, etc.) — useful when testing flows.</p>
+    <button class="btn btn-ghost btn-sm" id="reset-stubs-btn" type="button">Reset stub state</button>
+    <div id="reset-result" class="test-result"></div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">About</div>
+    <div class="row">
+      <div class="meta">
+        <div class="name">Computer Mechanics POS</div>
+        <div class="note">Version 3.0</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.DS_Store
+*.log
+
+# Persistent runtime data — contains encryption key, encrypted customer
+# passwords, job board with PII, and uploaded PDF attachments. Must never
+# be committed.
+data/

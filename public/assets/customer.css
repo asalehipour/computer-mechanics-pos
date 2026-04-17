@@ -1,0 +1,232 @@
+/* Customer-facing display styles — large, friendly, high contrast */
+
+body { background: var(--bg); }
+
+.stage-standby, .stage-intake, .stage-thanks {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  text-align: center;
+}
+
+.stage-standby h1 { font-size: 56px; font-weight: 700; letter-spacing: -0.02em; }
+.stage-standby p { font-size: 22px; color: var(--text-secondary); margin-top: 18px; }
+.stage-standby .muted { margin-top: 60px; color: var(--text-tertiary); font-size: 15px; }
+
+.stage-intake {
+  justify-content: flex-start;
+  padding-top: 8vh;
+}
+.stage-intake h1 {
+  font-size: 48px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+.stage-intake .greeting-sub {
+  font-size: 20px;
+  color: var(--text-secondary);
+  margin-bottom: 48px;
+}
+
+.customer-summary {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  width: min(600px, 92vw);
+  text-align: left;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.05);
+}
+.customer-summary h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 16px;
+}
+.customer-summary .rows { display: flex; flex-direction: column; gap: 14px; }
+.customer-summary .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+.customer-summary .row:last-child { border-bottom: none; }
+.customer-summary .row .label { font-size: 14px; color: var(--text-secondary); }
+.customer-summary .row .value {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: right;
+  word-break: break-word;
+}
+.customer-summary .row .value.empty { color: var(--text-tertiary); font-weight: 400; font-style: italic; }
+
+.stage-thanks h1 { font-size: 56px; }
+.stage-thanks p { font-size: 22px; color: var(--text-secondary); margin-top: 18px; }
+
+/* Repair mirror on the customer screen */
+.stage-repair {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8vh 2rem 3rem;
+  text-align: center;
+}
+.stage-repair h1 { font-size: 44px; font-weight: 700; letter-spacing: -0.02em; }
+.stage-repair .greeting-sub {
+  font-size: 18px;
+  color: var(--text-secondary);
+  margin: 8px 0 36px;
+}
+
+.stage-repair .customer-summary {
+  width: min(640px, 92vw);
+}
+
+.stage-repair .repair-desc {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  text-align: left;
+  padding: 4px 0;
+}
+
+.stage-repair .repair-total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  width: min(640px, 92vw);
+  margin-top: 24px;
+  padding: 20px 24px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.stage-repair .repair-total-row .total-amount {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* Signature capture — full-screen on the customer monitor */
+.stage-signature {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3vh 2rem;
+}
+.sig-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 40px 48px 32px;
+  width: min(900px, 94vw);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.05);
+  text-align: center;
+}
+.sig-card h1 {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+}
+.sig-intro {
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  max-width: 640px;
+  margin: 0 auto 18px;
+}
+.sig-name {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-bottom: 28px;
+}
+.sig-name strong { color: var(--text); font-weight: 600; }
+
+.sig-pad-wrap {
+  position: relative;
+  width: 100%;
+  margin: 0 auto 20px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  background: #ffffff;
+  overflow: hidden;
+}
+.sig-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 720 / 220;
+  background: #ffffff;
+  cursor: crosshair;
+}
+.sig-pad-baseline {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 22%;
+  height: 1px;
+  background: rgba(0,0,0,0.14);
+  pointer-events: none;
+}
+.sig-pad-hint {
+  position: absolute;
+  left: 0; right: 0; bottom: 10px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.sig-acknowledge {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  max-width: 640px;
+  margin: 0 auto 22px;
+  padding: 0 8px;
+}
+
+.sig-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+.sig-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 32px;
+  font-family: var(--font);
+  font-size: 17px;
+  font-weight: 600;
+  border: none;
+  border-radius: 980px;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.05s;
+  min-width: 160px;
+}
+.sig-btn:active:not(:disabled) { transform: scale(0.98); }
+.sig-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.sig-btn-primary { background: var(--accent); color: #fff; }
+.sig-btn-primary:hover:not(:disabled) { opacity: 0.9; }
+.sig-btn-ghost {
+  background: transparent;
+  border: 1.5px solid var(--border);
+  color: var(--text-secondary);
+}
+.sig-btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--text-tertiary); }
