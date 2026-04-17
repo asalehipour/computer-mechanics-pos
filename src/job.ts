@@ -1,7 +1,11 @@
 /**
- * Singleton "active job" for the current POS session. A single computer runs
- * one job at a time (staff monitor + customer monitor share the same job).
- * When we need concurrent jobs later, this becomes a Map keyed by PC/session.
+ * Per-staff "active job" state. Each logged-in staff user has their own
+ * in-flight Job keyed by Microsoft Entra `oid`. This lets multiple staff work
+ * concurrent jobs (e.g. phone bookings from one PC while a walk-in is served
+ * on another) without their state colliding.
+ *
+ * The customer-facing screen pairs with a specific staff via the `?staff=<oid>`
+ * query param; see ws.ts for the subscribe protocol.
  */
 
 import { getXeroClient, seedPickupTestInvoice } from './integrations/xero.js';
@@ -345,9 +349,9 @@ const EMPTY_CUSTOMER: CustomerDetails = {
   deviceIntent: null,
 };
 
-let current: Job | null = null;
+const jobsByUser = new Map<string, Job>();
 
-type Listener = (job: Job | null) => void;
+type Listener = (userKey: string, job: Job | null) => void;
 const listeners = new Set<Listener>();
 
 export function onJobChange(fn: Listener): () => void {
@@ -355,20 +359,32 @@ export function onJobChange(fn: Listener): () => void {
   return () => { listeners.delete(fn); };
 }
 
-function emit() {
-  for (const l of listeners) l(current);
+function emit(userKey: string): void {
+  const job = jobsByUser.get(userKey) ?? null;
+  for (const l of listeners) l(userKey, job);
 }
 
 function shortId(): string {
   return Math.random().toString(36).slice(2, 6).toUpperCase();
 }
 
-export function getCurrentJob(): Job | null {
-  return current;
+export function getCurrentJob(userKey: string): Job | null {
+  return jobsByUser.get(userKey) ?? null;
 }
 
-export function startNewJob(staff: { name: string; email: string }): Job {
-  current = {
+/** Internal: apply an update to a user's active job. Returns null if they
+ *  don't have one. Emits on success so subscribers see the new state. */
+function withJob(userKey: string, fn: (j: Job) => Job): Job | null {
+  const cur = jobsByUser.get(userKey);
+  if (!cur) return null;
+  const next = fn(cur);
+  jobsByUser.set(userKey, next);
+  emit(userKey);
+  return next;
+}
+
+export function startNewJob(userKey: string, staff: { name: string; email: string }): Job {
+  const job: Job = {
     id: shortId(),
     step: 'intake',
     customer: { ...EMPTY_CUSTOMER },
@@ -385,13 +401,14 @@ export function startNewJob(staff: { name: string; email: string }): Job {
     signatures: { dropOff: null, pickUp: null },
     signatureRequest: null,
   };
-  emit();
-  return current;
+  jobsByUser.set(userKey, job);
+  emit(userKey);
+  return job;
 }
 
-export function clearJob(): void {
-  current = null;
-  emit();
+export function clearJob(userKey: string): void {
+  jobsByUser.delete(userKey);
+  emit(userKey);
 }
 
 const CUSTOMER_FIELDS = new Set<keyof CustomerDetails>([
@@ -404,21 +421,19 @@ export function isCustomerField(field: string): field is keyof CustomerDetails {
 }
 
 export function updateCustomerField<K extends keyof CustomerDetails>(
+  userKey: string,
   field: K,
   value: CustomerDetails[K],
 ): Job | null {
-  if (!current) return null;
-  current = {
-    ...current,
+  return withJob(userKey, cur => ({
+    ...cur,
     customer: {
-      ...current.customer,
+      ...cur.customer,
       [field]: value,
       // If they tick "no password", clear any password that was typed.
       ...(field === 'hasComputerPassword' && value === false ? { computerPassword: '' } : {}),
     },
-  };
-  emit();
-  return current;
+  }));
 }
 
 // ── Signature capture ───────────────────────────────────────────────────────
@@ -429,128 +444,107 @@ export function isSignatureKind(x: unknown): x is SignatureKind {
 }
 
 /** Tell the customer screen to show its signature pad. Staff-initiated. */
-export function requestSignature(kind: SignatureKind): Job | null {
-  if (!current) return null;
-  current = {
-    ...current,
+export function requestSignature(userKey: string, kind: SignatureKind): Job | null {
+  return withJob(userKey, cur => ({
+    ...cur,
     signatureRequest: { kind, requestedAt: new Date().toISOString() },
-  };
-  emit();
-  return current;
+  }));
 }
 
 /** Staff cancels a pending request (e.g. changed their mind). */
-export function cancelSignatureRequest(): Job | null {
-  if (!current) return null;
-  if (!current.signatureRequest) return current;
-  current = { ...current, signatureRequest: null };
-  emit();
-  return current;
+export function cancelSignatureRequest(userKey: string): Job | null {
+  return withJob(userKey, cur => cur.signatureRequest ? { ...cur, signatureRequest: null } : cur);
 }
 
 const MAX_SIGNATURE_BYTES = 1_500_000; // ~1.1MB raw; generous for a PNG signature.
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 
 /** Customer screen submits a captured signature. Idempotent on `kind`. */
-export function submitSignature(kind: SignatureKind, dataUrl: string): Job | null {
-  if (!current) return null;
-  if (typeof dataUrl !== 'string' || !dataUrl.startsWith(PNG_DATA_URL_PREFIX)) return current;
-  if (dataUrl.length > MAX_SIGNATURE_BYTES) return current;
+export function submitSignature(userKey: string, kind: SignatureKind, dataUrl: string): Job | null {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith(PNG_DATA_URL_PREFIX)) return getCurrentJob(userKey);
+  if (dataUrl.length > MAX_SIGNATURE_BYTES) return getCurrentJob(userKey);
   const sig: Signature = { kind, dataUrl, signedAt: new Date().toISOString() };
   const slot = kind === 'drop_off' ? 'dropOff' : 'pickUp';
-  current = {
-    ...current,
-    signatures: { ...current.signatures, [slot]: sig },
+  return withJob(userKey, cur => ({
+    ...cur,
+    signatures: { ...cur.signatures, [slot]: sig },
     // Clear the pending request if it matched this kind.
     signatureRequest:
-      current.signatureRequest?.kind === kind ? null : current.signatureRequest,
-  };
-  emit();
-  return current;
+      cur.signatureRequest?.kind === kind ? null : cur.signatureRequest,
+  }));
 }
 
 /** Staff clears a captured signature (e.g. to redo). */
-export function clearSignature(kind: SignatureKind): Job | null {
-  if (!current) return null;
+export function clearSignature(userKey: string, kind: SignatureKind): Job | null {
   const slot = kind === 'drop_off' ? 'dropOff' : 'pickUp';
-  current = {
-    ...current,
-    signatures: { ...current.signatures, [slot]: null },
-  };
-  emit();
-  return current;
+  return withJob(userKey, cur => ({
+    ...cur,
+    signatures: { ...cur.signatures, [slot]: null },
+  }));
 }
 
-export function setStep(step: Step): Job | null {
-  if (!current) return null;
-  current = { ...current, step };
-  emit();
-  return current;
+export function setStep(userKey: string, step: Step): Job | null {
+  return withJob(userKey, cur => ({ ...cur, step }));
 }
 
 /** Transition from the router screen into one of the four flows. */
-export function chooseRoute(route: Route): Job | null {
-  if (!current) return null;
-  if (current.step !== 'route') return current;
-  // Initialize route-specific state on first entry; preserve on back-and-forth.
-  let next = { ...current, step: route as Step };
-  if (route === 'repair' && !next.repair) {
-    next = { ...next, repair: { ...EMPTY_REPAIR, lines: [newLine()] } };
-  }
-  if (route === 'product' && !next.product) {
-    next = { ...next, product: { ...EMPTY_PRODUCT, lines: [newProductLine()] } };
-  }
-  if (route === 'on_the_spot' && !next.onTheSpot) {
-    next = { ...next, onTheSpot: { ...EMPTY_ON_THE_SPOT } };
-  }
-  if (route === 'pickup' && !next.pickup) {
-    next = { ...next, pickup: { ...EMPTY_PICKUP } };
-  }
-  current = next;
-  emit();
+export function chooseRoute(userKey: string, route: Route): Job | null {
+  const result = withJob(userKey, cur => {
+    if (cur.step !== 'route') return cur;
+    // Initialize route-specific state on first entry; preserve on back-and-forth.
+    let next = { ...cur, step: route as Step };
+    if (route === 'repair' && !next.repair) {
+      next = { ...next, repair: { ...EMPTY_REPAIR, lines: [newLine()] } };
+    }
+    if (route === 'product' && !next.product) {
+      next = { ...next, product: { ...EMPTY_PRODUCT, lines: [newProductLine()] } };
+    }
+    if (route === 'on_the_spot' && !next.onTheSpot) {
+      next = { ...next, onTheSpot: { ...EMPTY_ON_THE_SPOT } };
+    }
+    if (route === 'pickup' && !next.pickup) {
+      next = { ...next, pickup: { ...EMPTY_PICKUP } };
+    }
+    return next;
+  });
   // Kick off the async invoice fetch after we've emitted the 'loading' state
   // so the UI can show its spinner immediately.
-  if (route === 'pickup' && current.pickup?.loadState === 'loading') {
-    void pickupLoadInvoices();
+  if (route === 'pickup' && result?.pickup?.loadState === 'loading') {
+    void pickupLoadInvoices(userKey);
   }
-  return current;
+  return result;
 }
 
 /** Go back from a flow placeholder to the four-option router. */
-export function backToRouter(): Job | null {
-  if (!current) return null;
-  // Only valid from one of the route steps
-  if (!isRoute(current.step)) return current;
-  current = { ...current, step: 'route' };
-  emit();
-  return current;
+export function backToRouter(userKey: string): Job | null {
+  return withJob(userKey, cur => isRoute(cur.step) ? { ...cur, step: 'route' } : cur);
 }
 
 /**
  * From the checkout step, return to the originating flow so staff can edit
  * services/pricing without losing any data entered.
  */
-export function backFromCheckout(): Job | null {
-  if (!current) return null;
-  if (current.step !== 'checkout') return current;
-  // Infer the flow from populated state.
-  let nextStep: Step = 'route';
-  if (current.repair) nextStep = 'repair';
-  else if (current.product) nextStep = 'product';
-  else if (current.onTheSpot) nextStep = 'on_the_spot';
-  else if (current.pickup) nextStep = 'pickup';
-  current = { ...current, step: nextStep };
-  emit();
-  return current;
+export function backFromCheckout(userKey: string): Job | null {
+  return withJob(userKey, cur => {
+    if (cur.step !== 'checkout') return cur;
+    // Infer the flow from populated state.
+    let nextStep: Step = 'route';
+    if (cur.repair) nextStep = 'repair';
+    else if (cur.product) nextStep = 'product';
+    else if (cur.onTheSpot) nextStep = 'on_the_spot';
+    else if (cur.pickup) nextStep = 'pickup';
+    return { ...cur, step: nextStep };
+  });
 }
 
 export type SubmitStep1Result =
   | { ok: true; contactId: string; isExistingContact: boolean; contactName: string; job: Job }
   | { ok: false; error: string; missing?: string[] };
 
-export async function submitStep1(): Promise<SubmitStep1Result> {
-  if (!current) return { ok: false, error: 'no_active_job' };
-  const c = current.customer;
+export async function submitStep1(userKey: string): Promise<SubmitStep1Result> {
+  const initial = getCurrentJob(userKey);
+  if (!initial) return { ok: false, error: 'no_active_job' };
+  const c = initial.customer;
 
   const missing: string[] = [];
   if (!c.firstName.trim()) missing.push('firstName');
@@ -582,38 +576,37 @@ export async function submitStep1(): Promise<SubmitStep1Result> {
   // receipt can print it; it's stripped from customer-facing broadcasts by
   // toCustomerFacing(). The encrypted record is the durable copy used for
   // audited reveal after the session ends.
-  let passwordRecordId: string | null = current.passwordRecordId;
+  let passwordRecordId: string | null = initial.passwordRecordId;
   if (c.hasComputerPassword && c.computerPassword.trim() && !passwordRecordId) {
     try {
       passwordRecordId = await savePassword({
         plaintext: c.computerPassword,
-        jobId: current.id,
+        jobId: initial.id,
         contactId: contact.contactId,
         customerEmail: c.email.trim(),
         customerName: `${c.firstName.trim()} ${c.lastName.trim()}`,
-        createdBy: current.startedBy,
+        createdBy: initial.startedBy,
       });
     } catch (err) {
       // Non-fatal — surface to staff but don't block the job advancing. They
-      // can retry by toggling the password checkbox off/on and resubmitting.
+      // can retry by toggling the password checkbox off/n and resubmitting.
       console.error('[job] Failed to save computer password:', err);
     }
   }
 
-  current = {
-    ...current,
-    contactId: contact.contactId,
-    isExistingContact: isExisting,
-    step: 'route',
-    passwordRecordId,
-  };
-  emit();
+  // Guard: job may have been cleared/replaced during the await.
+  const updated = withJob(userKey, cur =>
+    cur.id === initial.id
+      ? { ...cur, contactId: contact!.contactId, isExistingContact: isExisting, step: 'route', passwordRecordId }
+      : cur,
+  );
+  if (!updated) return { ok: false, error: 'job_disappeared' };
   return {
     ok: true,
     contactId: contact.contactId,
     isExistingContact: isExisting,
     contactName: `${contact.firstName} ${contact.lastName}`,
-    job: current,
+    job: updated,
   };
 }
 
@@ -623,19 +616,16 @@ function newLine(): ServiceLine {
   return { id: shortId(), service: '', variant: '', cost: 0 };
 }
 
-function withRepair(fn: (r: RepairDetails) => RepairDetails): Job | null {
-  if (!current || !current.repair) return current;
-  current = { ...current, repair: fn(current.repair) };
-  emit();
-  return current;
+function withRepair(userKey: string, fn: (r: RepairDetails) => RepairDetails): Job | null {
+  return withJob(userKey, cur => cur.repair ? { ...cur, repair: fn(cur.repair) } : cur);
 }
 
-export function repairAddLine(): Job | null {
-  return withRepair(r => ({ ...r, lines: [...r.lines, newLine()] }));
+export function repairAddLine(userKey: string): Job | null {
+  return withRepair(userKey, r => ({ ...r, lines: [...r.lines, newLine()] }));
 }
 
-export function repairRemoveLine(lineId: string): Job | null {
-  return withRepair(r => ({
+export function repairRemoveLine(userKey: string, lineId: string): Job | null {
+  return withRepair(userKey, r => ({
     ...r,
     // Never delete the last line — the form always shows at least one row.
     lines: r.lines.length > 1 ? r.lines.filter(l => l.id !== lineId) : r.lines,
@@ -643,18 +633,18 @@ export function repairRemoveLine(lineId: string): Job | null {
 }
 
 export function repairUpdateLine<K extends keyof ServiceLine>(
-  lineId: string, field: K, value: ServiceLine[K],
+  userKey: string, lineId: string, field: K, value: ServiceLine[K],
 ): Job | null {
-  return withRepair(r => ({
+  return withRepair(userKey, r => ({
     ...r,
     lines: r.lines.map(l => l.id === lineId ? { ...l, [field]: value } : l),
   }));
 }
 
 export function repairUpdateField<K extends keyof RepairDetails>(
-  field: K, value: RepairDetails[K],
+  userKey: string, field: K, value: RepairDetails[K],
 ): Job | null {
-  return withRepair(r => {
+  return withRepair(userKey, r => {
     const next = { ...r, [field]: value };
     // Clearing payment type clears any deposit that was entered.
     if (field === 'paymentType' && value !== 'deposit') next.depositAmount = 0;
@@ -673,10 +663,11 @@ export type SubmitRepairResult =
   | { ok: true; job: Job }
   | { ok: false; error: string; detail?: string };
 
-export function submitRepair(): SubmitRepairResult {
-  if (!current) return { ok: false, error: 'no_active_job' };
-  if (current.step !== 'repair') return { ok: false, error: 'wrong_step' };
-  const r = current.repair;
+export function submitRepair(userKey: string): SubmitRepairResult {
+  const cur = getCurrentJob(userKey);
+  if (!cur) return { ok: false, error: 'no_active_job' };
+  if (cur.step !== 'repair') return { ok: false, error: 'wrong_step' };
+  const r = cur.repair;
   if (!r) return { ok: false, error: 'no_repair_state' };
 
   const validLines = r.lines.filter(l => l.service.trim().length > 0);
@@ -693,13 +684,13 @@ export function submitRepair(): SubmitRepairResult {
     return { ok: false, error: 'missing_deposit', detail: 'Enter a deposit amount.' };
   }
 
-  current = {
-    ...current,
+  const updated = withJob(userKey, c => ({
+    ...c,
     step: 'checkout',
-    checkout: current.checkout ?? { ...EMPTY_CHECKOUT },
-  };
-  emit();
-  return { ok: true, job: current };
+    checkout: c.checkout ?? { ...EMPTY_CHECKOUT },
+  }));
+  if (!updated) return { ok: false, error: 'no_active_job' };
+  return { ok: true, job: updated };
 }
 
 // ── Product flow ────────────────────────────────────────────────────────────
@@ -708,37 +699,34 @@ function newProductLine(): ProductLine {
   return { id: shortId(), name: '', qty: 1, unitPrice: 0 };
 }
 
-function withProduct(fn: (p: ProductDetails) => ProductDetails): Job | null {
-  if (!current || !current.product) return current;
-  current = { ...current, product: fn(current.product) };
-  emit();
-  return current;
+function withProduct(userKey: string, fn: (p: ProductDetails) => ProductDetails): Job | null {
+  return withJob(userKey, cur => cur.product ? { ...cur, product: fn(cur.product) } : cur);
 }
 
-export function productAddLine(): Job | null {
-  return withProduct(p => ({ ...p, lines: [...p.lines, newProductLine()] }));
+export function productAddLine(userKey: string): Job | null {
+  return withProduct(userKey, p => ({ ...p, lines: [...p.lines, newProductLine()] }));
 }
 
-export function productRemoveLine(lineId: string): Job | null {
-  return withProduct(p => ({
+export function productRemoveLine(userKey: string, lineId: string): Job | null {
+  return withProduct(userKey, p => ({
     ...p,
     lines: p.lines.length > 1 ? p.lines.filter(l => l.id !== lineId) : p.lines,
   }));
 }
 
 export function productUpdateLine<K extends keyof ProductLine>(
-  lineId: string, field: K, value: ProductLine[K],
+  userKey: string, lineId: string, field: K, value: ProductLine[K],
 ): Job | null {
-  return withProduct(p => ({
+  return withProduct(userKey, p => ({
     ...p,
     lines: p.lines.map(l => l.id === lineId ? { ...l, [field]: value } : l),
   }));
 }
 
 export function productUpdateField<K extends keyof ProductDetails>(
-  field: K, value: ProductDetails[K],
+  userKey: string, field: K, value: ProductDetails[K],
 ): Job | null {
-  return withProduct(p => {
+  return withProduct(userKey, p => {
     const next = { ...p, [field]: value };
     if (field === 'paymentType' && value !== 'deposit') next.depositAmount = 0;
     return next;
@@ -755,10 +743,11 @@ export type SubmitProductResult =
   | { ok: true; job: Job }
   | { ok: false; error: string; detail?: string };
 
-export function submitProduct(): SubmitProductResult {
-  if (!current) return { ok: false, error: 'no_active_job' };
-  if (current.step !== 'product') return { ok: false, error: 'wrong_step' };
-  const p = current.product;
+export function submitProduct(userKey: string): SubmitProductResult {
+  const cur = getCurrentJob(userKey);
+  if (!cur) return { ok: false, error: 'no_active_job' };
+  if (cur.step !== 'product') return { ok: false, error: 'wrong_step' };
+  const p = cur.product;
   if (!p) return { ok: false, error: 'no_product_state' };
 
   const validLines = p.lines.filter(l => l.name.trim().length > 0 && l.qty > 0 && l.unitPrice > 0);
@@ -772,28 +761,25 @@ export function submitProduct(): SubmitProductResult {
     return { ok: false, error: 'missing_deposit', detail: 'Enter a deposit amount.' };
   }
 
-  current = {
-    ...current,
+  const updated = withJob(userKey, c => ({
+    ...c,
     step: 'checkout',
-    checkout: current.checkout ?? { ...EMPTY_CHECKOUT },
-  };
-  emit();
-  return { ok: true, job: current };
+    checkout: c.checkout ?? { ...EMPTY_CHECKOUT },
+  }));
+  if (!updated) return { ok: false, error: 'no_active_job' };
+  return { ok: true, job: updated };
 }
 
 // ── On-the-spot flow ────────────────────────────────────────────────────────
 
-function withOnTheSpot(fn: (o: OnTheSpotDetails) => OnTheSpotDetails): Job | null {
-  if (!current || !current.onTheSpot) return current;
-  current = { ...current, onTheSpot: fn(current.onTheSpot) };
-  emit();
-  return current;
+function withOnTheSpot(userKey: string, fn: (o: OnTheSpotDetails) => OnTheSpotDetails): Job | null {
+  return withJob(userKey, cur => cur.onTheSpot ? { ...cur, onTheSpot: fn(cur.onTheSpot) } : cur);
 }
 
 export function onTheSpotUpdateField<K extends keyof OnTheSpotDetails>(
-  field: K, value: OnTheSpotDetails[K],
+  userKey: string, field: K, value: OnTheSpotDetails[K],
 ): Job | null {
-  return withOnTheSpot(o => {
+  return withOnTheSpot(userKey, o => {
     const next = { ...o, [field]: value };
     if (field === 'paymentType' && value !== 'deposit') next.depositAmount = 0;
     return next;
@@ -804,10 +790,11 @@ export type SubmitOnTheSpotResult =
   | { ok: true; job: Job }
   | { ok: false; error: string; detail?: string };
 
-export function submitOnTheSpot(): SubmitOnTheSpotResult {
-  if (!current) return { ok: false, error: 'no_active_job' };
-  if (current.step !== 'on_the_spot') return { ok: false, error: 'wrong_step' };
-  const o = current.onTheSpot;
+export function submitOnTheSpot(userKey: string): SubmitOnTheSpotResult {
+  const cur = getCurrentJob(userKey);
+  if (!cur) return { ok: false, error: 'no_active_job' };
+  if (cur.step !== 'on_the_spot') return { ok: false, error: 'wrong_step' };
+  const o = cur.onTheSpot;
   if (!o) return { ok: false, error: 'no_on_the_spot_state' };
 
   if (!o.description.trim()) {
@@ -824,50 +811,50 @@ export function submitOnTheSpot(): SubmitOnTheSpotResult {
     return { ok: false, error: 'missing_deposit', detail: 'Enter a deposit amount.' };
   }
 
-  current = {
-    ...current,
+  const updated = withJob(userKey, c => ({
+    ...c,
     step: 'checkout',
-    checkout: current.checkout ?? { ...EMPTY_CHECKOUT },
-  };
-  emit();
-  return { ok: true, job: current };
+    checkout: c.checkout ?? { ...EMPTY_CHECKOUT },
+  }));
+  if (!updated) return { ok: false, error: 'no_active_job' };
+  return { ok: true, job: updated };
 }
 
 // ── Pickup flow ─────────────────────────────────────────────────────────────
 
-function withPickup(fn: (p: PickupDetails) => PickupDetails): Job | null {
-  if (!current || !current.pickup) return current;
-  current = { ...current, pickup: fn(current.pickup) };
-  emit();
-  return current;
+function withPickup(userKey: string, fn: (p: PickupDetails) => PickupDetails): Job | null {
+  return withJob(userKey, cur => cur.pickup ? { ...cur, pickup: fn(cur.pickup) } : cur);
 }
 
-async function pickupLoadInvoices(): Promise<void> {
-  if (!current || !current.pickup) return;
-  const cid = current.contactId;
+async function pickupLoadInvoices(userKey: string): Promise<void> {
+  const initial = getCurrentJob(userKey);
+  if (!initial || !initial.pickup) return;
+  const cid = initial.contactId;
   if (!cid) {
-    withPickup(p => ({
+    withPickup(userKey, p => ({
       ...p,
       loadState: 'error',
       loadError: 'No Xero contact on this job — step 1 must finish first.',
     }));
     return;
   }
-  const startedJobId = current.id;
+  const startedJobId = initial.id;
   try {
     const xero = getXeroClient();
     const invoices = await xero.listOpenInvoicesByContact(cid);
     // Guard against job being cleared or replaced while we were awaiting.
-    if (!current || current.id !== startedJobId || !current.pickup) return;
-    withPickup(p => ({
+    const now = getCurrentJob(userKey);
+    if (!now || now.id !== startedJobId || !now.pickup) return;
+    withPickup(userKey, p => ({
       ...p,
       loadState: invoices.length ? 'loaded' : 'empty',
       loadError: null,
       invoices,
     }));
   } catch (err) {
-    if (!current || current.id !== startedJobId || !current.pickup) return;
-    withPickup(p => ({
+    const now = getCurrentJob(userKey);
+    if (!now || now.id !== startedJobId || !now.pickup) return;
+    withPickup(userKey, p => ({
       ...p,
       loadState: 'error',
       loadError: err instanceof Error ? err.message : String(err),
@@ -880,67 +867,68 @@ async function pickupLoadInvoices(): Promise<void> {
  * reloads the list. Lets us exercise the pickup UI before the real checkout
  * flow is creating invoices. Remove once checkout is wired up.
  */
-export function pickupSeedTestInvoice(): Job | null {
-  if (!current || !current.pickup) return current;
-  if (!current.contactId) return current;
-  seedPickupTestInvoice(current.contactId);
-  return pickupReload();
+export function pickupSeedTestInvoice(userKey: string): Job | null {
+  const cur = getCurrentJob(userKey);
+  if (!cur || !cur.pickup || !cur.contactId) return cur;
+  seedPickupTestInvoice(cur.contactId);
+  return pickupReload(userKey);
 }
 
-export function pickupReload(): Job | null {
-  if (!current || !current.pickup) return current;
-  current = { ...current, pickup: { ...current.pickup, loadState: 'loading', loadError: null } };
-  emit();
-  void pickupLoadInvoices();
-  return current;
+export function pickupReload(userKey: string): Job | null {
+  const updated = withJob(userKey, cur =>
+    cur.pickup ? { ...cur, pickup: { ...cur.pickup, loadState: 'loading', loadError: null } } : cur,
+  );
+  if (updated?.pickup) void pickupLoadInvoices(userKey);
+  return updated;
 }
 
-export function pickupSelectInvoice(invoiceId: string): Job | null {
-  return withPickup(p => {
+export function pickupSelectInvoice(userKey: string, invoiceId: string): Job | null {
+  return withPickup(userKey, p => {
     if (!p.invoices.some(i => i.invoiceId === invoiceId)) return p;
     return { ...p, selectedInvoiceId: invoiceId };
   });
 }
 
-export function pickupClearSelection(): Job | null {
-  return withPickup(p => ({ ...p, selectedInvoiceId: null, extraLines: [], extraNotes: '' }));
+export function pickupClearSelection(userKey: string): Job | null {
+  return withPickup(userKey, p => ({ ...p, selectedInvoiceId: null, extraLines: [], extraNotes: '' }));
 }
 
 function newPickupExtraLine(): PickupExtraLine {
   return { id: shortId(), description: '', amount: 0 };
 }
 
-export function pickupAddExtraLine(): Job | null {
-  return withPickup(p => ({ ...p, extraLines: [...p.extraLines, newPickupExtraLine()] }));
+export function pickupAddExtraLine(userKey: string): Job | null {
+  return withPickup(userKey, p => ({ ...p, extraLines: [...p.extraLines, newPickupExtraLine()] }));
 }
 
-export function pickupRemoveExtraLine(lineId: string): Job | null {
-  return withPickup(p => ({ ...p, extraLines: p.extraLines.filter(l => l.id !== lineId) }));
+export function pickupRemoveExtraLine(userKey: string, lineId: string): Job | null {
+  return withPickup(userKey, p => ({ ...p, extraLines: p.extraLines.filter(l => l.id !== lineId) }));
 }
 
 export function pickupUpdateExtraLine<K extends 'description' | 'amount'>(
-  lineId: string, field: K, value: PickupExtraLine[K],
+  userKey: string, lineId: string, field: K, value: PickupExtraLine[K],
 ): Job | null {
-  return withPickup(p => ({
+  return withPickup(userKey, p => ({
     ...p,
     extraLines: p.extraLines.map(l => l.id === lineId ? { ...l, [field]: value } : l),
   }));
 }
 
 export function pickupUpdateField<K extends 'extraNotes'>(
-  field: K, value: PickupDetails[K],
+  userKey: string, field: K, value: PickupDetails[K],
 ): Job | null {
-  return withPickup(p => ({ ...p, [field]: value }));
+  return withPickup(userKey, p => ({ ...p, [field]: value }));
 }
 
 export type SubmitPickupResult =
   | { ok: true; job: Job }
   | { ok: false; error: string; detail?: string };
 
-export function submitPickup(): SubmitPickupResult {
-  if (!current) return { ok: false, error: 'no_active_job' };
-  if (current.step !== 'pickup') return { ok: false, error: 'wrong_step' };
-  const pu = current.pickup;
+export function submitPickup(userKey: string): SubmitPickupResult {
+  const cur = getCurrentJob(userKey);
+  if (!cur) return { ok: false, error: 'no_active_job' };
+  if (cur.step !== 'pickup') return { ok: false, error: 'wrong_step' };
+  const pu = cur.pickup;
   if (!pu) return { ok: false, error: 'no_pickup_state' };
 
   if (!pu.selectedInvoiceId) {
@@ -955,22 +943,19 @@ export function submitPickup(): SubmitPickupResult {
     }
   }
 
-  current = {
-    ...current,
+  const updated = withJob(userKey, c => ({
+    ...c,
     step: 'checkout',
-    checkout: current.checkout ?? { ...EMPTY_CHECKOUT },
-  };
-  emit();
-  return { ok: true, job: current };
+    checkout: c.checkout ?? { ...EMPTY_CHECKOUT },
+  }));
+  if (!updated) return { ok: false, error: 'no_active_job' };
+  return { ok: true, job: updated };
 }
 
 // ── Checkout flow ───────────────────────────────────────────────────────────
 
-function withCheckout(fn: (c: CheckoutDetails) => CheckoutDetails): Job | null {
-  if (!current || !current.checkout) return current;
-  current = { ...current, checkout: fn(current.checkout) };
-  emit();
-  return current;
+function withCheckout(userKey: string, fn: (c: CheckoutDetails) => CheckoutDetails): Job | null {
+  return withJob(userKey, cur => cur.checkout ? { ...cur, checkout: fn(cur.checkout) } : cur);
 }
 
 /** How much to charge/record today, based on which flow originated this checkout. */
@@ -1003,8 +988,8 @@ export function amountDueToday(job: Job): { amount: number; isDeposit: boolean }
   return { amount: 0, isDeposit: false };
 }
 
-export function checkoutPickMethod(method: PaymentMethod): Job | null {
-  return withCheckout(c => {
+export function checkoutPickMethod(userKey: string, method: PaymentMethod): Job | null {
+  return withCheckout(userKey, c => {
     // Only valid from choosing or card_declined.
     if (c.state !== 'choosing' && c.state !== 'card_declined') return c;
     if (method === 'cash') return { ...c, method, state: 'cash_entry', declineReason: null };
@@ -1014,12 +999,12 @@ export function checkoutPickMethod(method: PaymentMethod): Job | null {
   });
 }
 
-export function checkoutUpdateTendered(amount: number): Job | null {
-  return withCheckout(c => ({ ...c, cashTendered: amount }));
+export function checkoutUpdateTendered(userKey: string, amount: number): Job | null {
+  return withCheckout(userKey, c => ({ ...c, cashTendered: amount }));
 }
 
-export function checkoutResetMethod(): Job | null {
-  return withCheckout(c => ({
+export function checkoutResetMethod(userKey: string): Job | null {
+  return withCheckout(userKey, c => ({
     ...c,
     state: 'choosing',
     method: null,
@@ -1077,24 +1062,25 @@ function lineItemsForFlow(job: Job): { lines: LineItem[]; reference: string } {
 /** The big one: create invoices + payments + board entry + emails based on
  *  flow + method. Non-critical failures (email) don't abort — they're
  *  logged in the receipt so staff can retry manually. */
-export async function checkoutConfirm(): Promise<Job | null> {
-  if (!current || current.step !== 'checkout') return current;
-  const c = current.checkout;
-  if (!c || !c.method) return current;
+export async function checkoutConfirm(userKey: string): Promise<Job | null> {
+  const initial = getCurrentJob(userKey);
+  if (!initial || initial.step !== 'checkout') return initial;
+  const c = initial.checkout;
+  if (!c || !c.method) return initial;
   if (c.state !== 'processing' && c.state !== 'cash_entry' && c.state !== 'card_charging') {
-    return current; // only run if we're at a confirmable state
+    return initial; // only run if we're at a confirmable state
   }
 
   const method = c.method;
-  const job = current;
+  const job = initial;
   const { amount: amountDueTodayValue } = amountDueToday(job);
 
   // Guard: cash requires tendered >= due
   if (method === 'cash' && c.cashTendered < amountDueTodayValue) {
-    return withCheckout(cur => ({ ...cur, state: 'error', error: 'Cash tendered is less than amount due.' }));
+    return withCheckout(userKey, cur => ({ ...cur, state: 'error', error: 'Cash tendered is less than amount due.' }));
   }
 
-  withCheckout(cur => ({ ...cur, state: 'processing', error: null }));
+  withCheckout(userKey, cur => ({ ...cur, state: 'processing', error: null }));
 
   const xero = getXeroClient();
   const email = getEmailClient();
@@ -1288,39 +1274,40 @@ export async function checkoutConfirm(): Promise<Job | null> {
       changeGiven: method === 'cash' ? Math.max(0, c.cashTendered - amountDueTodayValue) : undefined,
       reviewEmailScheduledAt,
     };
-    return withCheckout(cur => ({ ...cur, state: 'done', receipt, error: null }));
+    return withCheckout(userKey, cur => ({ ...cur, state: 'done', receipt, error: null }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return withCheckout(cur => ({ ...cur, state: 'error', error: msg }));
+    return withCheckout(userKey, cur => ({ ...cur, state: 'error', error: msg }));
   }
 }
 
 /** After Tyro declines. UI calls this to show the decline panel with retry/switch options. */
-export function checkoutCardDeclined(reason: string): Job | null {
-  return withCheckout(c => ({ ...c, state: 'card_declined', declineReason: reason }));
+export function checkoutCardDeclined(userKey: string, reason: string): Job | null {
+  return withCheckout(userKey, c => ({ ...c, state: 'card_declined', declineReason: reason }));
 }
 
 /** Called by the card flow — runs tyro.charge, then (on approval) calls confirm. */
-export async function checkoutChargeCard(): Promise<Job | null> {
-  if (!current || !current.checkout) return current;
-  const c = current.checkout;
-  if (c.method !== 'card' || c.state !== 'card_charging') return current;
+export async function checkoutChargeCard(userKey: string): Promise<Job | null> {
+  const cur = getCurrentJob(userKey);
+  if (!cur || !cur.checkout) return cur;
+  const c = cur.checkout;
+  if (c.method !== 'card' || c.state !== 'card_charging') return cur;
 
-  const { amount } = amountDueToday(current);
+  const { amount } = amountDueToday(cur);
   if (amount <= 0) {
     // Nothing to charge — treat as pay_later (e.g. $0 due)
-    return checkoutConfirm();
+    return checkoutConfirm(userKey);
   }
 
   const tyro = getTyroClient();
   try {
-    const result = await tyro.charge({ amount, reference: `Job ${current.id}` });
+    const result = await tyro.charge({ amount, reference: `Job ${cur.id}` });
     if (!result.approved) {
-      return checkoutCardDeclined(result.declineReason || 'Declined by terminal.');
+      return checkoutCardDeclined(userKey, result.declineReason || 'Declined by terminal.');
     }
     // Stash the card result for the receipt before running confirm.
-    withCheckout(cur => ({
-      ...cur,
+    withCheckout(userKey, c2 => ({
+      ...c2,
       state: 'processing',
       receipt: {
         method: 'card',
@@ -1332,20 +1319,20 @@ export async function checkoutChargeCard(): Promise<Job | null> {
         transactionRef: result.transactionRef,
       },
     }));
-    const after = await checkoutConfirm();
+    const after = await checkoutConfirm(userKey);
     // Fold card details back into the final receipt (confirm replaced it).
     if (after?.checkout?.receipt && (result.cardType || result.cardLastFour)) {
-      return withCheckout(cur => ({
-        ...cur,
-        receipt: cur.receipt
-          ? { ...cur.receipt, cardType: result.cardType, cardLastFour: result.cardLastFour, transactionRef: result.transactionRef }
-          : cur.receipt,
+      return withCheckout(userKey, c2 => ({
+        ...c2,
+        receipt: c2.receipt
+          ? { ...c2.receipt, cardType: result.cardType, cardLastFour: result.cardLastFour, transactionRef: result.transactionRef }
+          : c2.receipt,
       }));
     }
     return after;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return checkoutCardDeclined(msg);
+    return checkoutCardDeclined(userKey, msg);
   }
 }
 

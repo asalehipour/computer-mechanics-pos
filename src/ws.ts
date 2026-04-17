@@ -1,12 +1,14 @@
 /**
  * WebSocket plumbing for the dual-screen sync.
  *
- * Each connection identifies itself as `staff` or `customer`. The full job
- * state is broadcast to staff connections; a redacted (customer-safe) view
- * goes to customer connections.
+ * Each connection identifies itself as `staff` or `customer`. Each staff
+ * connection is tied to the logged-in user's Microsoft Entra `oid` (the
+ * `userKey`), so state changes only broadcast to that user's own sockets.
+ * Customer connections pair to a specific staff user via `?staff=<oid>` at
+ * connect time; they receive redacted state for that staff's active job only.
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import { requireAuth, type SessionUser } from './auth.js';
 import {
@@ -90,12 +92,14 @@ type Audience = 'staff' | 'customer';
 interface Conn {
   socket: WebSocket;
   audience: Audience;
+  /** Which staff user this connection belongs to (staff) or is paired with (customer). */
+  userKey: string;
 }
 
 const connections = new Set<Conn>();
 
 function sendState(conn: Conn) {
-  const job = getCurrentJob();
+  const job = getCurrentJob(conn.userKey);
   const payload = conn.audience === 'customer' ? toCustomerFacing(job) : job;
   try {
     conn.socket.send(JSON.stringify({ type: 'state', job: payload }));
@@ -104,8 +108,10 @@ function sendState(conn: Conn) {
   }
 }
 
-function broadcast() {
-  for (const c of connections) sendState(c);
+function broadcastForUser(userKey: string) {
+  for (const c of connections) {
+    if (c.userKey === userKey) sendState(c);
+  }
 }
 
 function sendBoardState(conn: Conn, entries: BoardEntry[]) {
@@ -119,8 +125,8 @@ function broadcastBoard(entries: BoardEntry[]) {
   for (const c of connections) sendBoardState(c, entries);
 }
 
-// Re-broadcast whenever the job changes
-onJobChange(() => broadcast());
+// Re-broadcast whenever a user's active job changes — only to their sockets.
+onJobChange((userKey) => broadcastForUser(userKey));
 // Re-broadcast the board whenever entries change
 onBoardChange((entries) => broadcastBoard(entries));
 
@@ -142,10 +148,30 @@ interface IncomingMessage {
   url?: unknown;
   partId?: string;
   commentId?: string;
+  staff?: string;
 }
 
 function isPaymentMethod(x: unknown): x is PaymentMethod {
   return x === 'cash' || x === 'card' || x === 'pay_later';
+}
+
+/**
+ * Resolve the userKey for a new connection. Staff connections get their own
+ * `oid`. Customer connections accept a `?staff=<oid>` query param naming the
+ * staff user they're paired with — required so the customer screen can show
+ * the right job when multiple staff are taking walk-ins concurrently.
+ */
+function resolveUserKey(req: FastifyRequest, user: SessionUser | undefined): string | null {
+  const q = (req.query ?? {}) as Record<string, string | undefined>;
+  const audience = q.audience === 'customer' ? 'customer' : 'staff';
+  if (audience === 'customer') {
+    // Customer pairing is opt-in via ?staff=<oid>. If missing, pair with the
+    // staff session on this browser (the counter PC usually has staff logged
+    // in — and a single pairing there is fine).
+    if (typeof q.staff === 'string' && q.staff.length > 0) return q.staff;
+    return user?.oid ?? null;
+  }
+  return user?.oid ?? null;
 }
 
 export async function registerWebSocket(app: FastifyInstance) {
@@ -153,7 +179,12 @@ export async function registerWebSocket(app: FastifyInstance) {
 
   app.get('/ws', { websocket: true, preHandler: requireAuth }, (socket, req) => {
     const user = req.session.get('user') as SessionUser | undefined;
-    const conn: Conn = { socket: socket as unknown as WebSocket, audience: 'staff' };
+    const userKey = resolveUserKey(req, user);
+    if (!userKey) {
+      try { socket.close(1008, 'no_user_key'); } catch { /* ignore */ }
+      return;
+    }
+    const conn: Conn = { socket: socket as unknown as WebSocket, audience: 'staff', userKey };
     connections.add(conn);
 
     // Send current state immediately on connect (even before subscribe, so
@@ -168,10 +199,16 @@ export async function registerWebSocket(app: FastifyInstance) {
       try { msg = JSON.parse(raw.toString()); }
       catch { return; }
 
+      const uk = conn.userKey;
+
       switch (msg.type) {
         case 'subscribe': {
           if (msg.audience === 'customer' || msg.audience === 'staff') {
             conn.audience = msg.audience;
+            // If a customer connection specifies a staff to pair with, honour it.
+            if (msg.audience === 'customer' && typeof msg.staff === 'string' && msg.staff.length > 0) {
+              conn.userKey = msg.staff;
+            }
             sendState(conn);
             sendBoardState(conn, boardGetAllSync());
           }
@@ -179,12 +216,12 @@ export async function registerWebSocket(app: FastifyInstance) {
         }
         case 'newJob': {
           if (conn.audience !== 'staff' || !user) return;
-          startNewJob({ name: user.name, email: user.email });
+          startNewJob(uk, { name: user.name, email: user.email });
           break;
         }
         case 'clearJob': {
           if (conn.audience !== 'staff') return;
-          clearJob();
+          clearJob(uk);
           break;
         }
         case 'updateField': {
@@ -192,19 +229,18 @@ export async function registerWebSocket(app: FastifyInstance) {
           if (typeof msg.field !== 'string' || !isCustomerField(msg.field)) return;
           const v = msg.value;
           if (msg.field === 'hasComputerPassword') {
-            updateCustomerField('hasComputerPassword', Boolean(v));
+            updateCustomerField(uk, 'hasComputerPassword', Boolean(v));
           } else if (msg.field === 'deviceIntent') {
-            // Null clears the answer; otherwise must be a valid intent.
-            if (v === null) updateCustomerField('deviceIntent', null);
-            else if (isDeviceIntent(v)) updateCustomerField('deviceIntent', v);
+            if (v === null) updateCustomerField(uk, 'deviceIntent', null);
+            else if (isDeviceIntent(v)) updateCustomerField(uk, 'deviceIntent', v);
           } else {
-            updateCustomerField(msg.field as Exclude<keyof CustomerDetails, 'hasComputerPassword' | 'deviceIntent'>, String(v ?? ''));
+            updateCustomerField(uk, msg.field as Exclude<keyof CustomerDetails, 'hasComputerPassword' | 'deviceIntent'>, String(v ?? ''));
           }
           break;
         }
         case 'submitStep1': {
           if (conn.audience !== 'staff') return;
-          const result = await submitStep1();
+          const result = await submitStep1(uk);
           try {
             conn.socket.send(JSON.stringify({ type: 'step1Result', result }));
           } catch { /* ignore */ }
@@ -213,28 +249,28 @@ export async function registerWebSocket(app: FastifyInstance) {
         case 'chooseRoute': {
           if (conn.audience !== 'staff') return;
           if (!isRoute(msg.route)) return;
-          chooseRoute(msg.route);
+          chooseRoute(uk, msg.route);
           break;
         }
         case 'backToRouter': {
           if (conn.audience !== 'staff') return;
-          backToRouter();
+          backToRouter(uk);
           break;
         }
         case 'backFromCheckout': {
           if (conn.audience !== 'staff') return;
-          backFromCheckout();
+          backFromCheckout(uk);
           break;
         }
         case 'repairAddLine': {
           if (conn.audience !== 'staff') return;
-          repairAddLine();
+          repairAddLine(uk);
           break;
         }
         case 'repairRemoveLine': {
           if (conn.audience !== 'staff') return;
           if (typeof msg.lineId !== 'string') return;
-          repairRemoveLine(msg.lineId);
+          repairRemoveLine(uk, msg.lineId);
           break;
         }
         case 'repairUpdateLine': {
@@ -243,9 +279,9 @@ export async function registerWebSocket(app: FastifyInstance) {
           if (typeof msg.field !== 'string' || !isRepairLineField(msg.field)) return;
           const v = msg.value;
           if (msg.field === 'cost') {
-            repairUpdateLine(msg.lineId, 'cost', Number(v) || 0);
+            repairUpdateLine(uk, msg.lineId, 'cost', Number(v) || 0);
           } else {
-            repairUpdateLine(msg.lineId, msg.field as Exclude<keyof ServiceLine, 'cost' | 'id'>, String(v ?? ''));
+            repairUpdateLine(uk, msg.lineId, msg.field as Exclude<keyof ServiceLine, 'cost' | 'id'>, String(v ?? ''));
           }
           break;
         }
@@ -256,24 +292,24 @@ export async function registerWebSocket(app: FastifyInstance) {
           switch (msg.field) {
             case 'customServiceAmount':
             case 'depositAmount':
-              repairUpdateField(msg.field, Number(v) || 0);
+              repairUpdateField(uk, msg.field, Number(v) || 0);
               break;
             case 'paymentType':
               if (v === 'full' || v === 'deposit' || v === null) {
-                repairUpdateField('paymentType', v as RepairDetails['paymentType']);
+                repairUpdateField(uk, 'paymentType', v as RepairDetails['paymentType']);
               }
               break;
             case 'deviceModel':
             case 'jobDescription':
             case 'customServiceName':
-              repairUpdateField(msg.field, String(v ?? ''));
+              repairUpdateField(uk, msg.field, String(v ?? ''));
               break;
           }
           break;
         }
         case 'submitRepair': {
           if (conn.audience !== 'staff') return;
-          const result = submitRepair();
+          const result = submitRepair(uk);
           try {
             conn.socket.send(JSON.stringify({ type: 'repairResult', result }));
           } catch { /* ignore */ }
@@ -281,13 +317,13 @@ export async function registerWebSocket(app: FastifyInstance) {
         }
         case 'productAddLine': {
           if (conn.audience !== 'staff') return;
-          productAddLine();
+          productAddLine(uk);
           break;
         }
         case 'productRemoveLine': {
           if (conn.audience !== 'staff') return;
           if (typeof msg.lineId !== 'string') return;
-          productRemoveLine(msg.lineId);
+          productRemoveLine(uk, msg.lineId);
           break;
         }
         case 'productUpdateLine': {
@@ -296,9 +332,9 @@ export async function registerWebSocket(app: FastifyInstance) {
           if (typeof msg.field !== 'string' || !isProductLineField(msg.field)) return;
           const v = msg.value;
           if (msg.field === 'qty' || msg.field === 'unitPrice') {
-            productUpdateLine(msg.lineId, msg.field, Number(v) || 0);
+            productUpdateLine(uk, msg.lineId, msg.field, Number(v) || 0);
           } else {
-            productUpdateLine(msg.lineId, 'name', String(v ?? ''));
+            productUpdateLine(uk, msg.lineId, 'name', String(v ?? ''));
           }
           break;
         }
@@ -308,22 +344,22 @@ export async function registerWebSocket(app: FastifyInstance) {
           const v = msg.value;
           switch (msg.field) {
             case 'depositAmount':
-              productUpdateField('depositAmount', Number(v) || 0);
+              productUpdateField(uk, 'depositAmount', Number(v) || 0);
               break;
             case 'paymentType':
               if (v === 'full' || v === 'deposit' || v === null) {
-                productUpdateField('paymentType', v as ProductDetails['paymentType']);
+                productUpdateField(uk, 'paymentType', v as ProductDetails['paymentType']);
               }
               break;
             case 'notes':
-              productUpdateField('notes', String(v ?? ''));
+              productUpdateField(uk, 'notes', String(v ?? ''));
               break;
           }
           break;
         }
         case 'submitProduct': {
           if (conn.audience !== 'staff') return;
-          const result = submitProduct();
+          const result = submitProduct(uk);
           try {
             conn.socket.send(JSON.stringify({ type: 'productResult', result }));
           } catch { /* ignore */ }
@@ -338,23 +374,23 @@ export async function registerWebSocket(app: FastifyInstance) {
             case 'depositAmount':
             case 'hours':
             case 'hourlyRate':
-              onTheSpotUpdateField(msg.field, Number(v) || 0);
+              onTheSpotUpdateField(uk, msg.field, Number(v) || 0);
               break;
             case 'paymentType':
               if (v === 'full' || v === 'deposit' || v === null) {
-                onTheSpotUpdateField('paymentType', v as OnTheSpotDetails['paymentType']);
+                onTheSpotUpdateField(uk, 'paymentType', v as OnTheSpotDetails['paymentType']);
               }
               break;
             case 'description':
             case 'notes':
-              onTheSpotUpdateField(msg.field, String(v ?? ''));
+              onTheSpotUpdateField(uk, msg.field, String(v ?? ''));
               break;
           }
           break;
         }
         case 'submitOnTheSpot': {
           if (conn.audience !== 'staff') return;
-          const result = submitOnTheSpot();
+          const result = submitOnTheSpot(uk);
           try {
             conn.socket.send(JSON.stringify({ type: 'onTheSpotResult', result }));
           } catch { /* ignore */ }
@@ -362,35 +398,34 @@ export async function registerWebSocket(app: FastifyInstance) {
         }
         case 'pickupReload': {
           if (conn.audience !== 'staff') return;
-          pickupReload();
+          pickupReload(uk);
           break;
         }
         case 'pickupSeedTestInvoice': {
-          // Dev-only helper. Remove when checkout creates real invoices.
           if (conn.audience !== 'staff') return;
-          pickupSeedTestInvoice();
+          pickupSeedTestInvoice(uk);
           break;
         }
         case 'pickupSelectInvoice': {
           if (conn.audience !== 'staff') return;
           if (typeof msg.invoiceId !== 'string') return;
-          pickupSelectInvoice(msg.invoiceId);
+          pickupSelectInvoice(uk, msg.invoiceId);
           break;
         }
         case 'pickupClearSelection': {
           if (conn.audience !== 'staff') return;
-          pickupClearSelection();
+          pickupClearSelection(uk);
           break;
         }
         case 'pickupAddExtraLine': {
           if (conn.audience !== 'staff') return;
-          pickupAddExtraLine();
+          pickupAddExtraLine(uk);
           break;
         }
         case 'pickupRemoveExtraLine': {
           if (conn.audience !== 'staff') return;
           if (typeof msg.lineId !== 'string') return;
-          pickupRemoveExtraLine(msg.lineId);
+          pickupRemoveExtraLine(uk, msg.lineId);
           break;
         }
         case 'pickupUpdateExtraLine': {
@@ -399,21 +434,21 @@ export async function registerWebSocket(app: FastifyInstance) {
           if (typeof msg.field !== 'string' || !isPickupLineField(msg.field)) return;
           const v = msg.value;
           if (msg.field === 'amount') {
-            pickupUpdateExtraLine(msg.lineId, 'amount', Number(v) || 0);
+            pickupUpdateExtraLine(uk, msg.lineId, 'amount', Number(v) || 0);
           } else {
-            pickupUpdateExtraLine(msg.lineId, 'description', String(v ?? ''));
+            pickupUpdateExtraLine(uk, msg.lineId, 'description', String(v ?? ''));
           }
           break;
         }
         case 'pickupUpdateField': {
           if (conn.audience !== 'staff') return;
           if (typeof msg.field !== 'string' || !isPickupField(msg.field)) return;
-          pickupUpdateField('extraNotes', String(msg.value ?? ''));
+          pickupUpdateField(uk, 'extraNotes', String(msg.value ?? ''));
           break;
         }
         case 'submitPickup': {
           if (conn.audience !== 'staff') return;
-          const result = submitPickup();
+          const result = submitPickup(uk);
           try {
             conn.socket.send(JSON.stringify({ type: 'pickupResult', result }));
           } catch { /* ignore */ }
@@ -422,59 +457,56 @@ export async function registerWebSocket(app: FastifyInstance) {
         case 'checkoutPickMethod': {
           if (conn.audience !== 'staff') return;
           if (!isPaymentMethod(msg.method)) return;
-          checkoutPickMethod(msg.method);
-          // 'pay_later' moves the state straight to 'processing'; run confirm.
+          checkoutPickMethod(uk, msg.method);
           if (msg.method === 'pay_later') {
-            void checkoutConfirm();
+            void checkoutConfirm(uk);
           }
           break;
         }
         case 'checkoutUpdateTendered': {
           if (conn.audience !== 'staff') return;
-          checkoutUpdateTendered(Number(msg.value) || 0);
+          checkoutUpdateTendered(uk, Number(msg.value) || 0);
           break;
         }
         case 'checkoutConfirmCash': {
           if (conn.audience !== 'staff') return;
-          void checkoutConfirm();
+          void checkoutConfirm(uk);
           break;
         }
         case 'checkoutChargeCard': {
           if (conn.audience !== 'staff') return;
-          void checkoutChargeCard();
+          void checkoutChargeCard(uk);
           break;
         }
         case 'checkoutResetMethod': {
           if (conn.audience !== 'staff') return;
-          checkoutResetMethod();
+          checkoutResetMethod(uk);
           break;
         }
         case 'requestSignature': {
           if (conn.audience !== 'staff') return;
           if (!isSignatureKind(msg.kind)) return;
-          requestSignature(msg.kind);
+          requestSignature(uk, msg.kind);
           break;
         }
         case 'cancelSignatureRequest': {
           if (conn.audience !== 'staff') return;
-          cancelSignatureRequest();
+          cancelSignatureRequest(uk);
           break;
         }
         case 'clearSignature': {
           if (conn.audience !== 'staff') return;
           if (!isSignatureKind(msg.kind)) return;
-          clearSignature(msg.kind);
+          clearSignature(uk, msg.kind);
           break;
         }
         case 'submitSignature': {
-          // Only valid from the customer audience, and only if there's a
-          // matching pending request (staff must have asked first).
           if (conn.audience !== 'customer') return;
           if (!isSignatureKind(msg.kind)) return;
           if (typeof msg.dataUrl !== 'string') return;
-          const job = getCurrentJob();
+          const job = getCurrentJob(uk);
           if (!job?.signatureRequest || job.signatureRequest.kind !== msg.kind) return;
-          submitSignature(msg.kind, msg.dataUrl);
+          submitSignature(uk, msg.kind, msg.dataUrl);
           break;
         }
         // ── Job Board (staff-only) ──────────────────────────────────────
@@ -518,8 +550,6 @@ export async function registerWebSocket(app: FastifyInstance) {
           break;
         }
         case 'boardReceivePart': {
-          // Received a part — remove it from the active list and drop a
-          // comment so there's an audit trail of what arrived and when.
           if (conn.audience !== 'staff' || !user) return;
           if (typeof msg.entryId !== 'string') return;
           if (typeof msg.partId !== 'string') return;
