@@ -427,6 +427,74 @@
   color: var(--text);
 }
 
+/* ── Pickup: grouped jobs ──────────────────────────────────────────────
+   New pickup screen shows one block per active job for the customer,
+   with that job's invoices nested underneath. Previously the screen was
+   a flat invoice list which hid the job context. */
+.pickup-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.pickup-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.pickup-group-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.pickup-group-emoji {
+  font-size: 28px;
+  line-height: 1;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+}
+.pickup-group-meta { min-width: 0; flex: 1; }
+.pickup-group-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+.pickup-group-ticket { letter-spacing: -0.01em; }
+.pickup-group-device { color: var(--text-secondary); font-weight: 500; }
+.pickup-group-sub {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 3px;
+}
+.pickup-group-status {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.pickup-group-status.status-ready_for_collection { color: var(--green, #2ea44f); }
+.pickup-group-status.status-in_progress { color: #e2a64a; }
+.pickup-group-status.status-waiting_parts,
+.pickup-group-status.status-waiting_customer,
+.pickup-group-status.status-waiting_third_party { color: var(--red, #c94a4a); }
+.pickup-group-empty {
+  padding: 8px 4px 2px;
+  font-size: 13px;
+  font-style: italic;
+}
+
 /* Pickup — invoice list & summary */
 .invoice-list {
   display: flex;
@@ -602,7 +670,7 @@
 .preview-overlay.open { display: flex; }
 .preview-inner {
   background: #fff;
-  border-radius: 8px;
+  border-radius: 12px;
   width: 100%;
   max-width: 760px;
   box-shadow: 0 24px 64px rgba(0,0,0,0.2);
@@ -614,7 +682,7 @@
   padding: 12px 16px;
   border-bottom: 1px solid #e0e0e0;
   background: #f5f5f5;
-  border-radius: 8px 8px 0 0;
+  border-radius: 14px 14px 0 0;
 }
 .preview-toolbar span { font-size: 13px; font-weight: 500; color: #444; }
 .preview-toolbar-actions { display: flex; gap: 8px; }
@@ -660,7 +728,7 @@
   gap: 1px 16px;
   margin-bottom: 8px;
   border: 1px solid #888;
-  border-radius: 4px;
+  border-radius: 14px;
   background: #888;
   overflow: hidden;
 }
@@ -679,7 +747,7 @@
 .rinfo-label { font-weight: bold; font-size: 9.5px; white-space: nowrap; min-width: 100px; }
 .rinfo-val { font-size: 10px; border-bottom: 1px solid #888; flex: 1; min-height: 13px; padding-bottom: 1px; }
 .rproblem-label { font-weight: bold; font-size: 9.5px; margin-bottom: 2px; }
-.rproblem-box { border: 1px solid #888; border-radius: 3px; min-height: 38px; padding: 4px 7px; margin-bottom: 7px; font-size: 10px; white-space: pre-wrap; }
+.rproblem-box { border: 1px solid #888; border-radius: 14px; min-height: 38px; padding: 4px 7px; margin-bottom: 7px; font-size: 10px; white-space: pre-wrap; }
 .rconsent { font-size: 9px; margin-bottom: 3px; line-height: 1.35; }
 .rsig-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 6px; font-size: 9.5px; flex-wrap: wrap; }
 .rsig-item { display: flex; align-items: baseline; gap: 3px; white-space: nowrap; }
@@ -705,7 +773,7 @@
   display: flex;
   gap: 0;
   border: 1.5px solid #000;
-  border-radius: 4px;
+  border-radius: 14px;
   overflow: hidden;
   margin-bottom: 7px;
 }
@@ -719,7 +787,7 @@
   background: #000;
   color: #fff;
   padding: 4px 8px;
-  border-radius: 3px;
+  border-radius: 14px;
   display: flex;
   justify-content: space-between;
   font-size: 9px;
@@ -821,7 +889,7 @@
   height: 56px;
   background: #fff;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 12px;
   object-fit: contain;
   padding: 4px;
 }
@@ -859,7 +927,7 @@
   font-family: var(--font, inherit);
   font-size: 13px;
   font-weight: 500;
-  border-radius: 8px;
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);

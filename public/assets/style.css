@@ -14,8 +14,12 @@
   --border: rgba(0,0,0,0.08);
   --green: #34c759;
   --red: #ff3b30;
-  --radius: 12px;
-  --radius-lg: 20px;
+  /* Shared corner-radius tokens. Kept minimal on purpose — only --radius
+     (general surfaces) and --radius-lg (cards / modals) are consumed.
+     Extra scale steps were tried during a redesign pass and removed
+     when nothing ended up using them. */
+  --radius: 16px;
+  --radius-lg: 24px;
   --font: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
@@ -138,7 +142,7 @@ h1 {
   font-weight: 500;
   color: var(--text-secondary);
   text-decoration: none;
-  border-radius: 8px;
+  border-radius: 12px;
   transition: background 0.12s, color 0.12s;
 }
 .topbar-link:hover {
@@ -178,7 +182,7 @@ h1 {
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 12px;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }

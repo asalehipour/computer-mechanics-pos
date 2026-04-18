@@ -69,6 +69,17 @@ export interface BoardPart {
   domain: string;
   addedBy: { name: string; email: string };
   createdAt: string;
+  /**
+   * Arrival status. Absent/`"in_transit"` = ordered and on the way;
+   * `"arrived"` = staff marked the part received. We keep arrived parts
+   * on the card so the drawer can show "Arrived" bubbles instead of the
+   * part silently disappearing.
+   */
+  status?: 'in_transit' | 'arrived';
+  /** ISO timestamp when the part was marked arrived. */
+  arrivedAt?: string;
+  /** Who marked it arrived. */
+  arrivedBy?: { name: string; email: string };
 }
 
 /**
@@ -134,6 +145,12 @@ export interface BoardEntry {
   updatedAt: string;
   /** Order within a column — higher = appears first. Set to Date.now() at create. */
   sortKey: number;
+  /**
+   * Marks the job as urgent. Shown on the board card as a yellow "RUSH" ribbon
+   * so it stands out at a glance. Toggled from the drawer. Optional so older
+   * entries load without it.
+   */
+  rush?: boolean;
 }
 
 /** Extract a display-friendly hostname from a URL. Returns '' if url is bad. */
@@ -440,7 +457,8 @@ export type EditableEntryField =
   | 'customerPhone'
   | 'deviceModel'
   | 'jobDescription'
-  | 'deviceIntent';
+  | 'deviceIntent'
+  | 'rush';
 
 export async function updateEntry(
   entryId: string,
@@ -468,6 +486,9 @@ export async function updateEntry(
       if (value === null) e.deviceIntent = null;
       else if (isBoardDeviceIntent(value)) e.deviceIntent = value;
       else return e;  // ignore invalid intents rather than clearing
+      break;
+    case 'rush':
+      e.rush = !!value;
       break;
   }
   e.updatedAt = new Date().toISOString();
@@ -499,6 +520,31 @@ export async function addPart(
   if (!Array.isArray(e.parts)) e.parts = [];
   e.parts.push(part);
   e.updatedAt = part.createdAt;
+  await persist();
+  emit();
+  return e;
+}
+
+/**
+ * Mark a part as arrived. Unlike `removePart`, this keeps the row on the
+ * card so the UI can show an "Arrived" badge — received parts stay
+ * visible instead of silently disappearing from the list.
+ */
+export async function markPartArrived(
+  entryId: string,
+  partId: string,
+  arrivedBy: { name: string; email: string },
+): Promise<BoardEntry | null> {
+  await ensureLoaded();
+  const e = cache!.find(x => x.id === entryId);
+  if (!e || !Array.isArray(e.parts)) return null;
+  const part = e.parts.find(p => p.id === partId);
+  if (!part) return null;
+  if (part.status === 'arrived') return e;
+  part.status = 'arrived';
+  part.arrivedAt = new Date().toISOString();
+  part.arrivedBy = arrivedBy;
+  e.updatedAt = part.arrivedAt;
   await persist();
   emit();
   return e;
@@ -666,4 +712,41 @@ export function searchCustomers(query: string, limit = 8): CustomerSuggestion[] 
     if (seen.size >= limit) break;
   }
   return Array.from(seen.values());
+}
+
+/**
+ * Active (not-yet-collected) board entries for a given customer. Used by
+ * the pickup flow to show "all of this customer's jobs, grouped" instead
+ * of a flat list of Xero invoices.
+ *
+ * Match order (first hit wins per entry):
+ *   1. contactId exact match (most reliable — set in step 1 via Xero lookup)
+ *   2. normalized phone (digits only, min 6 digits to avoid false positives)
+ *   3. lowercased email exact match
+ *
+ * "Active" = any BoardStatus except `done_collected`. Newest-updated first.
+ */
+export function getActiveEntriesForContact(
+  lookup: { contactId?: string | null; phone?: string | null; email?: string | null },
+): BoardEntry[] {
+  if (!cache) return [];
+  const targetContactId = (lookup.contactId || '').trim() || null;
+  const targetPhone = normPhone(lookup.phone || '');
+  const targetEmail = (lookup.email || '').trim().toLowerCase();
+  // Require at least one usable key — otherwise we'd match everyone.
+  if (!targetContactId && targetPhone.length < 6 && !targetEmail) return [];
+
+  const matches = cache.filter(e => {
+    if (e.status === 'done_collected') return false;
+    if (targetContactId && e.contactId && e.contactId === targetContactId) return true;
+    if (targetPhone.length >= 6 && normPhone(e.customerPhone) === targetPhone) return true;
+    if (targetEmail && (e.customerEmail || '').trim().toLowerCase() === targetEmail) return true;
+    return false;
+  });
+
+  return matches.sort((a, b) => {
+    const ta = Date.parse(a.updatedAt || a.createdAt || '') || 0;
+    const tb = Date.parse(b.updatedAt || b.createdAt || '') || 0;
+    return tb - ta;
+  });
 }

@@ -17,7 +17,10 @@ import {
   createEntry as boardCreateEntry,
   completeEntryForPickup as boardCompleteForPickup,
   addAttachment as boardAddAttachment,
+  getActiveEntriesForContact as boardGetActiveForContact,
   type BoardFlow,
+  type BoardEntry,
+  type BoardStatus,
 } from './job-board.js';
 import { generateReceiptPdf } from './receipt-pdf.js';
 import { nextJobNumber } from './counter.js';
@@ -163,11 +166,51 @@ export interface PickupExtraLine {
 
 export type PickupLoadState = 'loading' | 'loaded' | 'empty' | 'error';
 
+/**
+ * A single active job for this customer, with the invoices attached to it.
+ * Serialized to the client so the pickup screen can show a job → invoices
+ * tree instead of a flat invoice list.
+ */
+export interface PickupJobGroup {
+  /** BoardEntry.id — used as the identifier for selection + UI keys. */
+  entryId: string;
+  /** Short 4-char job id (back-compat). */
+  jobId: string;
+  /** Human-friendly sequential number — rendered as "Ticket #1052". */
+  displayNumber: number | null;
+  deviceModel: string;
+  deviceEmoji: string;
+  status: BoardStatus;
+  /** Updated-at / created-at so the UI can sort and show "opened X days ago". */
+  createdAt: string;
+  updatedAt: string;
+  /** Xero invoices attached to this job, cross-referenced from contactId. */
+  invoices: Invoice[];
+}
+
 export interface PickupDetails {
   loadState: PickupLoadState;
   loadError: string | null;
+  /**
+   * Grouped view: one item per active board entry for this customer.
+   * Primary source of truth for the new pickup screen.
+   */
+  jobGroups: PickupJobGroup[];
+  /**
+   * Flat invoice list. Still populated for the fallback path (customer has
+   * no active board entries but has open Xero invoices — e.g. pre-board
+   * jobs or external invoices) so the UI can render a legacy flat picker.
+   */
   invoices: Invoice[];
+  /**
+   * True when `invoices` came from the Xero-only fallback (no job groups
+   * matched). Lets the UI explain "we couldn't find an active job for this
+   * customer — here are their open Xero invoices instead."
+   */
+  isFallback: boolean;
   selectedInvoiceId: string | null;
+  /** Which job group the selected invoice belongs to (null on fallback). */
+  selectedEntryId: string | null;
   extraLines: PickupExtraLine[];
   extraNotes: string;
 }
@@ -175,8 +218,11 @@ export interface PickupDetails {
 const EMPTY_PICKUP: PickupDetails = {
   loadState: 'loading',
   loadError: null,
+  jobGroups: [],
   invoices: [],
+  isFallback: false,
   selectedInvoiceId: null,
+  selectedEntryId: null,
   extraLines: [],
   extraNotes: '',
 };
@@ -835,6 +881,22 @@ function withPickup(userKey: string, fn: (p: PickupDetails) => PickupDetails): J
   return withJob(userKey, cur => cur.pickup ? { ...cur, pickup: fn(cur.pickup) } : cur);
 }
 
+/**
+ * Build the pickup screen's data: one group per *active* board entry for
+ * this customer, each with its invoices attached.
+ *
+ * Strategy:
+ *   1. Fetch ALL invoices (not just open) for this contact from Xero — a
+ *      customer might have already paid for a job and we still want to
+ *      show it under its ticket so staff can reprint/review.
+ *   2. Find active (not-collected) board entries for this customer via
+ *      contactId → phone → email.
+ *   3. Distribute each Xero invoice to its matching entry by
+ *      entry.invoiceNumbers. Invoices that don't match any entry are
+ *      ignored here — they surface via the fallback path only.
+ *   4. If no entries match at all, fall back to the flat Xero open-invoice
+ *      list (old behaviour). `isFallback` flags this to the UI.
+ */
 async function pickupLoadInvoices(userKey: string): Promise<void> {
   const initial = getCurrentJob(userKey);
   if (!initial || !initial.pickup) return;
@@ -850,15 +912,56 @@ async function pickupLoadInvoices(userKey: string): Promise<void> {
   const startedJobId = initial.id;
   try {
     const xero = getXeroClient();
-    const invoices = await xero.listOpenInvoicesByContact(cid);
+    // Active board entries for this customer — primary source for grouping.
+    const entries = boardGetActiveForContact({
+      contactId: cid,
+      phone: initial.customer.phone,
+      email: initial.customer.email,
+    });
+
+    let jobGroups: PickupJobGroup[] = [];
+    let fallbackInvoices: Invoice[] = [];
+    let isFallback = false;
+
+    if (entries.length > 0) {
+      // Fetch invoices once, bucket by entry.
+      // Using listOpenInvoicesByContact for now — future: add a listAll
+      // variant to the Xero client if staff need to see paid invoices
+      // too. The grouped UI is otherwise identical.
+      const invoices = await xero.listOpenInvoicesByContact(cid);
+      jobGroups = entries.map(e => ({
+        entryId: e.id,
+        jobId: e.jobId,
+        displayNumber: e.displayNumber ?? null,
+        deviceModel: e.deviceModel || '',
+        deviceEmoji: e.deviceEmoji || '',
+        status: e.status,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+        invoices: invoicesForEntry(e, invoices),
+      }));
+    } else {
+      // No active board entries — fall back to the flat Xero list so the
+      // screen still works for pre-board jobs / externally-created invoices.
+      fallbackInvoices = await xero.listOpenInvoicesByContact(cid);
+      isFallback = true;
+    }
+
+    const hasContent = jobGroups.length > 0 || fallbackInvoices.length > 0;
+
     // Guard against job being cleared or replaced while we were awaiting.
     const now = getCurrentJob(userKey);
     if (!now || now.id !== startedJobId || !now.pickup) return;
     withPickup(userKey, p => ({
       ...p,
-      loadState: invoices.length ? 'loaded' : 'empty',
+      loadState: hasContent ? 'loaded' : 'empty',
       loadError: null,
-      invoices,
+      jobGroups,
+      invoices: fallbackInvoices,
+      isFallback,
+      // Clear any prior selection — the job list may have reshaped.
+      selectedInvoiceId: null,
+      selectedEntryId: null,
     }));
   } catch (err) {
     const now = getCurrentJob(userKey);
@@ -869,6 +972,17 @@ async function pickupLoadInvoices(userKey: string): Promise<void> {
       loadError: err instanceof Error ? err.message : String(err),
     }));
   }
+}
+
+/**
+ * Filter a list of Xero invoices down to the ones attached to a specific
+ * BoardEntry. We match on invoice *number* (human-readable) rather than
+ * invoiceId because that's what gets stored on the entry at checkout.
+ */
+function invoicesForEntry(entry: BoardEntry, all: Invoice[]): Invoice[] {
+  const attached = new Set((entry.invoiceNumbers || []).map(n => n.trim()).filter(Boolean));
+  if (attached.size === 0) return [];
+  return all.filter(inv => attached.has(inv.invoiceNumber));
 }
 
 /**
@@ -891,15 +1005,50 @@ export function pickupReload(userKey: string): Job | null {
   return updated;
 }
 
+/**
+ * Look up an invoice across both the grouped job list and the flat
+ * fallback list, returning the (invoice, owning entryId) tuple.
+ * entryId is null when the match came from the fallback bucket.
+ *
+ * Exported so receipt-pdf.ts and other downstream consumers don't have
+ * to re-implement the two-source lookup — there are several places that
+ * resolve the selected invoice and we want them in lockstep.
+ */
+export function findPickupInvoice(
+  p: PickupDetails,
+  invoiceId: string,
+): { invoice: Invoice; entryId: string | null } | null {
+  for (const g of p.jobGroups) {
+    const hit = g.invoices.find(i => i.invoiceId === invoiceId);
+    if (hit) return { invoice: hit, entryId: g.entryId };
+  }
+  const flat = p.invoices.find(i => i.invoiceId === invoiceId);
+  if (flat) return { invoice: flat, entryId: null };
+  return null;
+}
+
+/** Shortcut for "the currently-selected invoice, wherever it lives". */
+export function selectedPickupInvoice(p: PickupDetails): Invoice | null {
+  if (!p.selectedInvoiceId) return null;
+  return findPickupInvoice(p, p.selectedInvoiceId)?.invoice ?? null;
+}
+
 export function pickupSelectInvoice(userKey: string, invoiceId: string): Job | null {
   return withPickup(userKey, p => {
-    if (!p.invoices.some(i => i.invoiceId === invoiceId)) return p;
-    return { ...p, selectedInvoiceId: invoiceId };
+    const found = findPickupInvoice(p, invoiceId);
+    if (!found) return p;
+    return { ...p, selectedInvoiceId: invoiceId, selectedEntryId: found.entryId };
   });
 }
 
 export function pickupClearSelection(userKey: string): Job | null {
-  return withPickup(userKey, p => ({ ...p, selectedInvoiceId: null, extraLines: [], extraNotes: '' }));
+  return withPickup(userKey, p => ({
+    ...p,
+    selectedInvoiceId: null,
+    selectedEntryId: null,
+    extraLines: [],
+    extraNotes: '',
+  }));
 }
 
 function newPickupExtraLine(): PickupExtraLine {
@@ -943,7 +1092,9 @@ export function submitPickup(userKey: string): SubmitPickupResult {
   if (!pu.selectedInvoiceId) {
     return { ok: false, error: 'missing_invoice', detail: 'Pick which invoice the customer is collecting.' };
   }
-  if (!pu.invoices.some(i => i.invoiceId === pu.selectedInvoiceId)) {
+  // Look up in both the grouped list and the fallback flat list — either
+  // is a valid source depending on whether the customer has active jobs.
+  if (!findPickupInvoice(pu, pu.selectedInvoiceId)) {
     return { ok: false, error: 'invalid_invoice', detail: 'That invoice is no longer in the open list.' };
   }
   for (const l of pu.extraLines) {
@@ -989,7 +1140,7 @@ export function amountDueToday(job: Job): { amount: number; isDeposit: boolean }
     return { amount: isDeposit ? (Number(o.depositAmount) || 0) : total, isDeposit };
   }
   if (pu) {
-    const inv = pu.selectedInvoiceId ? pu.invoices.find(i => i.invoiceId === pu.selectedInvoiceId) : null;
+    const inv = selectedPickupInvoice(pu);
     const invDue = Number(inv?.amountDue) || 0;
     const extras = pu.extraLines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
     return { amount: invDue + extras, isDeposit: false };
@@ -1101,9 +1252,7 @@ export async function checkoutConfirm(userKey: string): Promise<Job | null> {
     // ─── Xero: create invoice(s) + payment(s) ─────────────────────────────
     if (job.pickup) {
       const pu = job.pickup;
-      const selected = pu.selectedInvoiceId
-        ? pu.invoices.find(i => i.invoiceId === pu.selectedInvoiceId)
-        : null;
+      const selected = selectedPickupInvoice(pu);
       if (!selected) throw new Error('Selected pickup invoice is missing.');
 
       // Main invoice — record payment unless pay_later

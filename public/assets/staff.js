@@ -68,6 +68,11 @@ function connectWs() {
         // Without this, clicking a chip mutates a stale object and render() sees
         // the server's fresh object, producing the "click twice" bug.
         mergeInPlace(prev, next);
+        // And push any changed customer fields into the live <input> elements
+        // so when the CUSTOMER screen types on their side the staff screen
+        // actually shows the new value. Without this the merge updates only
+        // the JS model — the DOM keeps whatever was typed last on this side.
+        syncIntakeInputs();
       }
     } else if (msg.type === 'step1Result') {
       lastStep1Result = msg.result;
@@ -106,6 +111,37 @@ function wsSend(msg) {
     // Queue — will flush on next 'open'. Prevents the "I clicked but nothing
     // happened" bug when the socket is briefly reconnecting.
     pendingSends.push(msg);
+  }
+}
+
+// Cancel the in-flight job. Optimistic: blanks the local `job` and re-renders
+// back to the dashboard *immediately*, then fires the WS message. If the
+// socket is connected the server will confirm with a matching null state
+// (harmless no-op). If the socket is mid-reconnect the message is queued
+// and the UI still feels snappy instead of looking frozen — which is the
+// "Cancel job isn't working" symptom we had previously.
+function cancelCurrentJob() {
+  if (!job) return;
+  if (!confirm('Cancel and clear this job?')) return;
+  job = null;
+  render();
+  wsSend({ type: 'clearJob' });
+}
+
+// Mirror of customer.js: refresh each intake input's .value from the current
+// `job.customer` model, but never stomp the input that currently has focus
+// (never interrupt staff typing). Called after a non-structural merge so
+// customer-originated edits propagate visually to the staff screen.
+function syncIntakeInputs() {
+  if (!job || job.step !== 'intake') return;
+  const c = job.customer || {};
+  const fields = ['firstName', 'lastName', 'phone', 'email', 'postcode', 'company'];
+  for (const f of fields) {
+    const el = document.querySelector(`[data-intake-field="${f}"]`);
+    if (!el) continue;
+    if (document.activeElement === el) continue;
+    const v = c[f] ?? '';
+    if (el.value !== v) el.value = v;
   }
 }
 
@@ -195,7 +231,15 @@ function viewIntake(job) {
 
   const input = (name, type = 'text', placeholder = '', attrs = {}) => h('input', {
     type, name, placeholder, value: c[name] ?? '', autocomplete: 'off',
-    oninput: (e) => pushFieldDebounced(name, e.target.value),
+    // `data-intake-field` lets syncIntakeInputs() refresh the value on echoes
+    // from the customer side without stomping a focused staff input.
+    'data-intake-field': name,
+    oninput: (e) => {
+      // Keep the local model in lock-step so a subsequent merge-in-place of
+      // the server echo won't clobber our own pending value.
+      if (job?.customer) job.customer[name] = e.target.value;
+      pushFieldDebounced(name, e.target.value);
+    },
     ...attrs,
   });
 
@@ -384,7 +428,7 @@ function viewIntake(job) {
       h('div', { class: 'form-actions' },
         h('button', {
           class: 'btn btn-ghost',
-          onclick: () => { if (confirm('Cancel this job?')) wsSend({ type: 'clearJob' }); },
+          onclick: cancelCurrentJob,
         }, 'Cancel'),
         h('div', { class: 'spacer' }),
         h('button', {
@@ -450,7 +494,7 @@ function viewRouter(job) {
     h('div', { class: 'router-footer' },
       h('button', {
         class: 'btn btn-ghost',
-        onclick: () => { if (confirm('Cancel this job?')) wsSend({ type: 'clearJob' }); },
+        onclick: cancelCurrentJob,
       }, 'Cancel job'),
     ),
   );
@@ -1603,7 +1647,7 @@ function viewCheckout(job) {
       }, 'Preview receipt'),
       h('button', {
         class: 'btn btn-ghost',
-        onclick: () => { if (confirm('Cancel and clear this job?')) wsSend({ type: 'clearJob' }); },
+        onclick: cancelCurrentJob,
       }, 'Cancel job'),
     ),
   );
@@ -2007,13 +2051,64 @@ function fmtInvDate(iso) {
   } catch { return iso; }
 }
 
+// Resolve an invoice id across the grouped list + the flat fallback list.
+// Mirrors findPickupInvoice() in src/job.ts — we have two sources now and
+// every consumer needs to check both.
+function findPickupInvoiceClient(pu, invoiceId) {
+  if (!pu || !invoiceId) return null;
+  for (const g of (pu.jobGroups || [])) {
+    const hit = (g.invoices || []).find(i => i.invoiceId === invoiceId);
+    if (hit) return { invoice: hit, group: g };
+  }
+  const flat = (pu.invoices || []).find(i => i.invoiceId === invoiceId);
+  if (flat) return { invoice: flat, group: null };
+  return null;
+}
+
 function computePickupTotals(pu) {
-  const inv = pu?.selectedInvoiceId
-    ? pu.invoices.find(i => i.invoiceId === pu.selectedInvoiceId)
-    : null;
+  const found = pu?.selectedInvoiceId ? findPickupInvoiceClient(pu, pu.selectedInvoiceId) : null;
+  const inv = found?.invoice ?? null;
   const invoiceDue = Number(inv?.amountDue) || 0;
   const extrasTotal = (pu?.extraLines ?? []).reduce((s, l) => s + (Number(l.amount) || 0), 0);
-  return { inv, invoiceDue, extrasTotal, total: invoiceDue + extrasTotal };
+  return { inv, group: found?.group ?? null, invoiceDue, extrasTotal, total: invoiceDue + extrasTotal };
+}
+
+// Friendly status label for a BoardStatus. Used by the pickup screen to
+// show "In progress" / "Ready" etc. next to each job group.
+const PICKUP_STATUS_LABEL = {
+  booked_in: 'Booked in',
+  in_progress: 'In progress',
+  waiting_parts: 'Waiting on parts',
+  waiting_customer: 'Waiting on customer',
+  waiting_third_party: 'Waiting · third party',
+  ready_for_collection: 'Ready for pickup',
+  on_the_spot: 'On the spot',
+};
+
+function renderInvoiceRow(inv, onPick) {
+  return h('button', {
+    type: 'button',
+    class: 'invoice-row',
+    onclick: onPick,
+  },
+    h('div', { class: 'inv-head' },
+      h('span', { class: 'inv-num' }, inv.invoiceNumber),
+      h('span', { class: 'inv-date' }, fmtInvDate(inv.createdAt)),
+    ),
+    h('div', { class: 'inv-body' },
+      h('span', { class: 'inv-summary' },
+        inv.lineItems.length === 1
+          ? inv.lineItems[0].description
+          : `${inv.lineItems.length} items${inv.reference ? ` — ${inv.reference}` : ''}`,
+      ),
+      h('span', { class: 'inv-amount' },
+        h('span', { class: 'inv-due' }, fmtAUD(inv.amountDue)),
+        Number(inv.amountPaid) > 0
+          ? h('span', { class: 'inv-paid' }, `${fmtAUD(inv.amountPaid)} paid`)
+          : null,
+      ),
+    ),
+  );
 }
 
 function viewPickup(job) {
@@ -2090,40 +2185,70 @@ function viewPickup(job) {
     );
   }
 
-  // ── No invoice picked yet: show the list ──────────────────────────────────
+  // ── No invoice picked yet: show the grouped job list ─────────────────────
   if (!pu.selectedInvoiceId) {
-    return h('div', {},
-      h('h1', {}, 'Which invoice?'),
-      h('p', { class: 'sub' },
-        `${job.customer.firstName || 'This customer'} has ${pu.invoices.length} open ${pu.invoices.length === 1 ? 'invoice' : 'invoices'}. Pick the one they're collecting.`),
+    const firstName = job.customer.firstName || 'This customer';
+    const groups = pu.jobGroups || [];
+    const hasGroups = groups.length > 0;
+    const jobCount = groups.length;
+    const totalInvoices = hasGroups
+      ? groups.reduce((s, g) => s + (g.invoices?.length || 0), 0)
+      : (pu.invoices || []).length;
 
-      h('div', { class: 'card' },
-        h('div', { class: 'invoice-list' },
-          ...pu.invoices.map(inv => h('button', {
-            type: 'button',
-            class: 'invoice-row',
-            onclick: () => wsSend({ type: 'pickupSelectInvoice', invoiceId: inv.invoiceId }),
-          },
-            h('div', { class: 'inv-head' },
-              h('span', { class: 'inv-num' }, inv.invoiceNumber),
-              h('span', { class: 'inv-date' }, fmtInvDate(inv.createdAt)),
-            ),
-            h('div', { class: 'inv-body' },
-              h('span', { class: 'inv-summary' },
-                inv.lineItems.length === 1
-                  ? inv.lineItems[0].description
-                  : `${inv.lineItems.length} items${inv.reference ? ` — ${inv.reference}` : ''}`,
+    // Headline depends on source:
+    //   - grouped:   "Sam has 2 active jobs / 3 invoices. Which one?"
+    //   - fallback:  "Sam has no active jobs but 2 open invoices."
+    const headline = hasGroups
+      ? `${firstName} has ${jobCount} active ${jobCount === 1 ? 'job' : 'jobs'}.` +
+        (totalInvoices ? ` Pick the invoice they're collecting.` : ' No invoices on these jobs yet.')
+      : pu.isFallback
+        ? `${firstName} has no active jobs. Showing open Xero invoices instead.`
+        : `${firstName} has ${totalInvoices} open ${totalInvoices === 1 ? 'invoice' : 'invoices'}. Pick one.`;
+
+    const listBody = hasGroups
+      ? h('div', { class: 'pickup-groups' },
+          ...groups.map(g => {
+            const emoji = g.deviceEmoji || '💻';
+            const device = g.deviceModel || 'No device on file';
+            const ticketNum = g.displayNumber != null ? `#${g.displayNumber}` : `#${g.jobId}`;
+            const statusLabel = PICKUP_STATUS_LABEL[g.status] || g.status;
+            const invCount = (g.invoices || []).length;
+            return h('div', { class: 'pickup-group' },
+              h('div', { class: 'pickup-group-head' },
+                h('span', { class: 'pickup-group-emoji' }, emoji),
+                h('div', { class: 'pickup-group-meta' },
+                  h('div', { class: 'pickup-group-title' },
+                    h('span', { class: 'pickup-group-ticket' }, `Ticket ${ticketNum}`),
+                    h('span', { class: 'pickup-group-device' }, ` · ${device}`),
+                  ),
+                  h('div', { class: 'pickup-group-sub' },
+                    h('span', { class: `pickup-group-status status-${g.status}` }, statusLabel),
+                    h('span', { class: 'pickup-group-dot' }, '·'),
+                    h('span', {}, `Opened ${fmtInvDate(g.createdAt)}`),
+                  ),
+                ),
               ),
-              h('span', { class: 'inv-amount' },
-                h('span', { class: 'inv-due' }, fmtAUD(inv.amountDue)),
-                Number(inv.amountPaid) > 0
-                  ? h('span', { class: 'inv-paid' }, `${fmtAUD(inv.amountPaid)} paid`)
-                  : null,
-              ),
-            ),
-          )),
-        ),
-      ),
+              invCount === 0
+                ? h('p', { class: 'pickup-group-empty muted' }, 'No invoices attached to this job yet.')
+                : h('div', { class: 'invoice-list' },
+                    ...(g.invoices).map(inv => renderInvoiceRow(inv,
+                      () => wsSend({ type: 'pickupSelectInvoice', invoiceId: inv.invoiceId }))),
+                  ),
+            );
+          }),
+        )
+      : totalInvoices === 0
+        ? h('p', { class: 'muted' }, 'Nothing to collect. Tap Retry if you just created an invoice.')
+        : h('div', { class: 'invoice-list' },
+            ...(pu.invoices || []).map(inv => renderInvoiceRow(inv,
+              () => wsSend({ type: 'pickupSelectInvoice', invoiceId: inv.invoiceId }))),
+          );
+
+    return h('div', {},
+      h('h1', {}, hasGroups ? 'Which job?' : 'Which invoice?'),
+      h('p', { class: 'sub' }, headline),
+
+      h('div', { class: 'card' }, listBody),
 
       h('div', { class: 'form-actions' },
         backBtn,

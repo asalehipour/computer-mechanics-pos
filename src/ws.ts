@@ -21,6 +21,7 @@ import {
   isBoardStatus,
   moveEntry as boardMoveEntry,
   onBoardChange,
+  markPartArrived as boardMarkPartArrived,
   removePart as boardRemovePart,
   updateEntry as boardUpdateEntry,
   type BoardEntry,
@@ -563,8 +564,11 @@ export async function registerWebSocket(app: FastifyInstance) {
           const entry = boardGetAllSync().find(e => e.id === msg.entryId);
           const part = entry?.parts.find(p => p.id === msg.partId);
           if (!part) return;
+          // Mark arrived rather than deleting, so the drawer can keep showing
+          // the part with an "Arrived" pill. The comment still logs the event.
+          if (part.status === 'arrived') return;
           const body = `📦 Received: ${part.name}${part.url ? `\n${part.url}` : ''}`;
-          await boardRemovePart(msg.entryId, msg.partId);
+          await boardMarkPartArrived(msg.entryId, msg.partId, { name: user.name, email: user.email });
           await boardAddComment(msg.entryId, { name: user.name, email: user.email }, body);
           break;
         }
@@ -589,7 +593,7 @@ export async function registerWebSocket(app: FastifyInstance) {
           if (typeof msg.field !== 'string') return;
           const allowed: EditableEntryField[] = [
             'customerName', 'customerEmail', 'customerPhone',
-            'deviceModel', 'jobDescription', 'deviceIntent',
+            'deviceModel', 'jobDescription', 'deviceIntent', 'rush',
           ];
           if (!allowed.includes(msg.field as EditableEntryField)) return;
           void boardUpdateEntry(msg.entryId, msg.field as EditableEntryField, msg.value);

@@ -22,7 +22,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { Job, PaymentMethod } from './job.js';
-import { repairTotal, productTotal } from './job.js';
+import { repairTotal, productTotal, selectedPickupInvoice } from './job.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = join(__dirname, '..', 'public', 'assets', 'logo.jpg');
@@ -53,7 +53,7 @@ function servicesText(job: Job): string {
       parts.push(`Labour — ${o.hours} hr${o.hours === 1 ? '' : 's'} @ ${AUD(o.hourlyRate)}/hr`);
     }
   } else if (job.pickup) {
-    const selected = job.pickup.invoices.find(i => i.invoiceId === job.pickup!.selectedInvoiceId);
+    const selected = selectedPickupInvoice(job.pickup);
     if (selected) parts.push(`Balance on ${selected.invoiceNumber}: ${AUD(Number(selected.amountDue) || 0)}`);
     for (const l of job.pickup.extraLines) {
       if (!l.description.trim() && !(Number(l.amount) || 0)) continue;
@@ -94,7 +94,7 @@ function totalsFor(job: Job): { total: number; deposit: number; balance: number 
     total = (Number(o.price) || 0) + (Number(o.hours) || 0) * (Number(o.hourlyRate) || 0);
     if (o.paymentType === 'deposit') deposit = Number(o.depositAmount) || 0;
   } else if (job.pickup) {
-    const selected = job.pickup.invoices.find(i => i.invoiceId === job.pickup!.selectedInvoiceId);
+    const selected = selectedPickupInvoice(job.pickup);
     const invDue = Number(selected?.amountDue) || 0;
     const extras = job.pickup.extraLines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
     total = invDue + extras;
@@ -174,7 +174,7 @@ function renderReceipt(doc: PDFKit.PDFDocument, opts: GenerateReceiptOptions): v
   const servedBy = job.startedBy?.name ?? '';
   const invoiceStr = invoiceNumbers.length
     ? invoiceNumbers.join(', ')
-    : (job.pickup?.invoices.find(i => i.invoiceId === job.pickup!.selectedInvoiceId)?.invoiceNumber ?? '');
+    : (job.pickup ? (selectedPickupInvoice(job.pickup)?.invoiceNumber ?? '') : '');
 
   // ── 1. Header ──────────────────────────────────────────────────────────
   const headerTop = doc.y;

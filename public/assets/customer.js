@@ -332,10 +332,20 @@ function viewOnTheSpotMirror(job) {
   );
 }
 
+// Selected invoice can live in either the grouped job list or the flat
+// fallback list — mirror of findPickupInvoice() in src/job.ts.
+function findSelectedPickupInvoice(pu) {
+  if (!pu?.selectedInvoiceId) return null;
+  const id = pu.selectedInvoiceId;
+  for (const g of (pu.jobGroups || [])) {
+    const hit = (g.invoices || []).find(i => i.invoiceId === id);
+    if (hit) return hit;
+  }
+  return (pu.invoices || []).find(i => i.invoiceId === id) || null;
+}
+
 function pickupTotals(pu) {
-  const inv = pu?.selectedInvoiceId
-    ? pu.invoices.find(i => i.invoiceId === pu.selectedInvoiceId)
-    : null;
+  const inv = findSelectedPickupInvoice(pu);
   const invoiceDue = Number(inv?.amountDue) || 0;
   const extrasTotal = (pu?.extraLines ?? []).reduce((s, l) => s + (Number(l.amount) || 0), 0);
   return { inv, invoiceDue, extrasTotal, total: invoiceDue + extrasTotal };
