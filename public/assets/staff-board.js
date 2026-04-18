@@ -268,6 +268,14 @@ function renderCard(entry) {
 }
 
 // ── Drawer ────────────────────────────────────────────────────────────────
+// Cache of revealed plaintexts, keyed by passwordRecordId. Populated when
+// the drawer auto-reveals on open; cleared by the "Hide" button. Scoped to
+// this tab only — a hard refresh wipes it, forcing a fresh audit entry.
+const revealedPasswords = new Map();
+// Guards against firing two concurrent reveal requests for the same record
+// while the user rapid-opens/closes the drawer.
+const pendingReveals = new Set();
+
 function openDrawer(entryId) {
   openEntryId = entryId;
   editDetailsMode = false;
@@ -276,6 +284,35 @@ function openDrawer(entryId) {
   const entry = entries.find(e => e.id === entryId);
   if (!entry) return;
   renderDrawer(entry);
+  // Fire-and-forget: fetch the plaintext as the drawer opens so staff don't
+  // need to click Reveal. One audit log entry per open with a fixed reason.
+  if (entry.passwordRecordId) autoRevealPassword(entry);
+}
+
+async function autoRevealPassword(entry) {
+  const recordId = entry.passwordRecordId;
+  if (!recordId) return;
+  if (revealedPasswords.has(recordId)) return; // already cached this session
+  if (pendingReveals.has(recordId)) return;
+  pendingReveals.add(recordId);
+  try {
+    const r = await fetch(`/api/password/reveal/${encodeURIComponent(recordId)}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'Viewed on job card' }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || !body.ok) return; // silent — UI will keep showing the fallback
+    revealedPasswords.set(recordId, body.plaintext);
+    // If the drawer is still showing this entry, re-render to swap the
+    // placeholder for the plaintext.
+    if (openEntryId === entry.id) renderDrawer(entry);
+  } catch {
+    /* swallow — transient network, user can click Retry in the card */
+  } finally {
+    pendingReveals.delete(recordId);
+  }
 }
 
 function closeDrawer() {
@@ -462,19 +499,53 @@ function renderDrawer(entry) {
   // Password — only shown when a passwordRecordId exists. The record itself
   // auto-expires after 30 days; the server surfaces that via the "expired"
   // error which we translate into a friendly message.
+  //
+  // As of v3.2.0 the drawer auto-reveals on open — no more clicking "Reveal".
+  // One audit entry per open. Staff can click "Hide" to blank the card
+  // temporarily (e.g. customer peering at the screen) and re-tapping the
+  // entry will pull it back.
   const passwordSection = entry.passwordRecordId
-    ? h('div', { class: 'drawer-section' },
-        h('h4', {}, 'Computer password'),
-        h('div', { class: 'drawer-pwd-row', id: `pwd-display-${entry.passwordRecordId}` },
-          h('span', { class: 'pwd-saved-badge' }, '✓ Encrypted & stored'),
-          h('button', {
-            class: 'btn btn-ghost btn-sm-top',
-            type: 'button',
-            onclick: (ev) => revealBoardPassword(entry.passwordRecordId, ev.currentTarget),
-          }, 'Reveal'),
-        ),
-        h('div', { class: 'drawer-pwd-hint' }, 'Auto-purged 30 days after intake. Each reveal is logged.'),
-      )
+    ? (() => {
+        const recordId = entry.passwordRecordId;
+        const plain = revealedPasswords.get(recordId);
+        const pwdRow = plain != null
+          ? h('div', { class: 'drawer-pwd-row', id: `pwd-display-${recordId}` },
+              h('code', { class: 'drawer-pwd-plain' }, plain),
+              h('button', {
+                class: 'btn btn-ghost btn-sm-top',
+                type: 'button',
+                onclick: () => {
+                  navigator.clipboard?.writeText(plain).then(
+                    () => { /* no-op */ },
+                    () => alert('Could not copy to clipboard.'),
+                  );
+                },
+              }, 'Copy'),
+              h('button', {
+                class: 'btn btn-ghost btn-sm-top',
+                type: 'button',
+                onclick: () => {
+                  revealedPasswords.delete(recordId);
+                  renderDrawer(entry);
+                },
+              }, 'Hide'),
+            )
+          : h('div', { class: 'drawer-pwd-row', id: `pwd-display-${recordId}` },
+              h('span', { class: 'pwd-saved-badge' }, '✓ Encrypted — loading…'),
+              h('button', {
+                class: 'btn btn-ghost btn-sm-top',
+                type: 'button',
+                // Manual re-attempt if the auto-reveal above failed (network,
+                // expired record, etc.). Falls back to the old prompt flow.
+                onclick: (ev) => revealBoardPassword(recordId, ev.currentTarget),
+              }, 'Retry'),
+            );
+        return h('div', { class: 'drawer-section' },
+          h('h4', {}, 'Computer password'),
+          pwdRow,
+          h('div', { class: 'drawer-pwd-hint' }, 'Auto-purged 30 days after intake. Each view is logged.'),
+        );
+      })()
     : null;
 
   // Parts ordered — list above comments, newest first. Plus an inline form

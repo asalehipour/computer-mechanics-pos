@@ -3,6 +3,9 @@
 // from their side; both sides sync live via the same `updateField` WS
 // message). Everything past intake is read-only.
 
+const CUSTOMER_JS_VERSION = '3.2.0';
+console.info(`[customer.js] loaded v${CUSTOMER_JS_VERSION}`);
+
 const $stage = document.getElementById('stage');
 let job = null;
 let ws = null;
@@ -53,9 +56,16 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
+// Queue updates while the socket is mid-reconnect so we don't silently lose
+// a keystroke the customer typed during a blip. Flushed on the next 'open'.
+let pendingCustomerSends = [];
 function sendUpdateField(field, value) {
-  try { ws?.send(JSON.stringify({ type: 'updateField', field, value })); }
-  catch { /* swallow — next state will resync */ }
+  const payload = { type: 'updateField', field, value };
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify(payload)); return; }
+    catch { /* fall through to queue */ }
+  }
+  pendingCustomerSends.push(payload);
 }
 const sendUpdateFieldDebounced = debounce(sendUpdateField, 200);
 
@@ -64,6 +74,12 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.addEventListener('open', () => {
     ws.send(JSON.stringify({ type: 'subscribe', audience: 'customer' }));
+    // Flush anything that was queued while the socket was (re)connecting so
+    // customer-typed keystrokes never get silently dropped on a network blip.
+    for (const msg of pendingCustomerSends) {
+      try { ws.send(JSON.stringify(msg)); } catch { /* drop */ }
+    }
+    pendingCustomerSends = [];
   });
   ws.addEventListener('message', (ev) => {
     let msg;

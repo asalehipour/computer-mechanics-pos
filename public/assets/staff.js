@@ -1,5 +1,12 @@
 // Staff screen — dashboard, intake form, and WebSocket sync to the customer display.
 
+// Bumped on each deploy so we can confirm at a glance (in DevTools console)
+// that the browser isn't serving a stale cached copy. If you're debugging
+// "why isn't my latest fix live?" — open DevTools, look for this line on
+// load. If it's older than expected, hard-refresh (⌘⇧R / Ctrl+Shift+R).
+const STAFF_JS_VERSION = '3.2.0';
+console.info(`[staff.js] loaded v${STAFF_JS_VERSION}`);
+
 const $app = document.getElementById('app');
 const $badge = document.getElementById('job-badge');
 const $meName = document.getElementById('me-name');
@@ -34,6 +41,20 @@ function connectWs() {
     if (msg.type === 'state') {
       const prev = job;
       const next = msg.job;
+      // Enable from DevTools console with `window.__cmDebugSync = true`.
+      // Prints each incoming customer-field update so you can see live
+      // whether customer-side typing is reaching this screen.
+      if (window.__cmDebugSync) {
+        console.debug('[staff] state', {
+          step: next?.step,
+          customer: next?.customer && {
+            firstName: next.customer.firstName,
+            lastName: next.customer.lastName,
+            phone: next.customer.phone,
+            email: next.customer.email,
+          },
+        });
+      }
       // Only re-render when the view structure needs to change. Skipping same-step
       // field echoes prevents blowing away the input the user is typing into.
       const prevRepairLines   = prev?.repair?.lines?.length       ?? 0;
