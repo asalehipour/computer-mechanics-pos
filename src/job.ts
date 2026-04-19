@@ -17,6 +17,8 @@ import {
   createEntry as boardCreateEntry,
   completeEntryForPickup as boardCompleteForPickup,
   addAttachment as boardAddAttachment,
+  replaceAttachmentsOfKind as boardReplaceAttachmentsOfKind,
+  saveEntrySignature as boardSaveSignature,
   getActiveEntriesForContact as boardGetActiveForContact,
   type BoardFlow,
   type BoardEntry,
@@ -1359,8 +1361,29 @@ export async function checkoutConfirm(userKey: string): Promise<Job | null> {
         const changeGiven = method === 'cash'
           ? Math.max(0, c.cashTendered - amountDueTodayValue)
           : undefined;
+        // On pickup the drop-off signature was captured in a previous session
+        // — it's on the board entry but NOT on the current `job` object.
+        // Fold it in so the receipt PDF renders BOTH signatures together.
+        // We also promote the current session's pick-up signature onto the
+        // same merged view so the PDF sees a complete pair regardless of
+        // which flow we're in.
+        let jobForReceipt = job;
+        if (flow === 'pickup' && boardEntry.signatures?.dropOff?.dataUrl) {
+          const priorDropOff = boardEntry.signatures.dropOff;
+          jobForReceipt = {
+            ...job,
+            signatures: {
+              ...job.signatures,
+              dropOff: {
+                kind: 'drop_off',
+                dataUrl: priorDropOff.dataUrl,
+                signedAt: priorDropOff.signedAt,
+              },
+            },
+          };
+        }
         const receiptPdf = await generateReceiptPdf({
-          job,
+          job: jobForReceipt,
           invoiceNumbers,
           method,
           amountDueToday: amountDueTodayValue,
@@ -1369,12 +1392,35 @@ export async function checkoutConfirm(userKey: string): Promise<Job | null> {
           changeGiven,
         });
         const serviceLabel = job.displayNumber ? `#${job.displayNumber}` : job.id;
-        await boardAddAttachment(boardEntry.id, {
+        // Replace any previous receipt on this card instead of stacking a new
+        // one. The pickup checkout regenerates the receipt with BOTH the
+        // drop-off and pickup signatures embedded, and we want the drawer to
+        // show exactly one authoritative copy per job — not "receipt v1" and
+        // "receipt v2" side by side.
+        await boardReplaceAttachmentsOfKind(boardEntry.id, 'receipt', {
           kind: 'receipt',
           name: `Receipt — Job ${serviceLabel}`,
           filename: `receipt-${job.displayNumber ?? job.id}.pdf`,
           data: receiptPdf,
         });
+        // Persist both captured signatures onto the entry itself so the
+        // pickup flow (which runs in a fresh job session later) can fold the
+        // drop-off signature into its own receipt without spelunking through
+        // the old PDF to recover it.
+        if (job.signatures?.dropOff?.dataUrl) {
+          await boardSaveSignature(
+            boardEntry.id, 'drop_off',
+            job.signatures.dropOff.dataUrl,
+            job.signatures.dropOff.signedAt,
+          );
+        }
+        if (job.signatures?.pickUp?.dataUrl) {
+          await boardSaveSignature(
+            boardEntry.id, 'pick_up',
+            job.signatures.pickUp.dataUrl,
+            job.signatures.pickUp.signedAt,
+          );
+        }
         for (const inv of pdfAttachments) {
           const invNum = inv.filename.replace(/\.pdf$/i, '');
           await boardAddAttachment(boardEntry.id, {

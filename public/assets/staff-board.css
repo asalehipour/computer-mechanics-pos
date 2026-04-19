@@ -112,13 +112,21 @@
 /* ── Cards ──────────────────────────────────────────────────────────────── */
 .board-card {
   background: var(--surface);
-  border-radius: 14px;
-  padding: 10px 12px;
+  border-radius: 16px;
+  /* More generous padding + a minimum height so the cards don't feel
+     crammed. Before: 10px/12px padding with no min height — a one-line
+     customer name looked claustrophobic. Now: 14px/16px padding and a
+     comfortable floor so every card looks balanced even when the device
+     field is empty. */
+  padding: 14px 16px;
+  min-height: 118px;
   cursor: grab;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 6px rgba(0, 0, 0, 0.04);
   border: 1px solid transparent;
   transition: box-shadow 0.12s, transform 0.08s, border-color 0.12s;
   user-select: none;
+  display: flex;
+  flex-direction: column;
 }
 .board-card:hover {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06), 0 6px 12px rgba(0, 0, 0, 0.08);
@@ -183,7 +191,11 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 10px;
+  /* margin-top:auto pushes the foot to the bottom so the min-height's
+     extra space appears as breathing room between the device line and
+     the time stamp, not as a dead zone below the footer. */
+  margin-top: auto;
+  padding-top: 10px;
   font-size: 11px;
   color: var(--text-tertiary);
 }
@@ -194,6 +206,17 @@
   border-radius: 980px;
   font-weight: 500;
 }
+/* Per-flow accents on the little pill so staff don't have to read the
+   word — product / quick-fix / pickup each get a distinct color. */
+.board-card-flow.flow-product     { background: rgba(108, 99, 255, 0.12); color: #5b4fd1; }
+.board-card-flow.flow-on_the_spot { background: rgba(23, 162, 184, 0.12); color: #0e7380; }
+.board-card-flow.flow-pickup      { background: rgba(46, 164, 79, 0.12); color: #1f7a37; }
+/* Fallback pill used when flow is repair — shows the workflow status
+   instead so every card says something useful in that spot. */
+.board-card-status {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
 
 /* ── Modal (job card) ───────────────────────────────────────────────────── */
 /* Centered two-column modal. Left column: job details. Right column: parts
@@ -201,15 +224,23 @@
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  /* Lighter tint + heavier blur — the board behind should read as
+     "frosted glass" rather than "dimmed". Safari / iOS needs the
+     -webkit- prefix to actually render the blur. */
+  background: rgba(15, 20, 32, 0.35);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
   z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  animation: modal-fade 0.12s ease-out;
+  animation: modal-fade 0.18s ease-out;
 }
-@keyframes modal-fade { from { background: rgba(0, 0, 0, 0); } to { background: rgba(0, 0, 0, 0.45); } }
+@keyframes modal-fade {
+  from { background: rgba(15, 20, 32, 0); backdrop-filter: blur(0) saturate(100%); -webkit-backdrop-filter: blur(0) saturate(100%); }
+  to   { background: rgba(15, 20, 32, 0.35); backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%); }
+}
 
 .modal-panel {
   background: var(--surface);

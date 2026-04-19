@@ -83,6 +83,13 @@ function flowLabel(flow) {
   }
 }
 
+// Shared with the card foot — re-uses the COLUMNS titles so any future
+// rename of a column shows up on the card too.
+function statusLabel(status) {
+  const col = COLUMNS.find(c => c.status === status);
+  return col ? col.title : status;
+}
+
 function methodLabel(m) {
   if (m === 'cash') return 'Cash';
   if (m === 'card') return 'Card';
@@ -261,7 +268,12 @@ function renderCard(entry) {
     h('div', { class: 'board-card-name' }, entry.customerName || '—'),
     h('div', { class: 'board-card-device' }, entry.deviceModel || 'No device info'),
     h('div', { class: 'board-card-foot' },
-      h('span', { class: 'board-card-flow' }, flowLabel(entry.flow)),
+      // Hide the flow pill for plain repair jobs (that's 80%+ of traffic so
+      // a "Repair" label on every card is just noise). Product / on-the-spot
+      // / pickup cards still get a pill so they stand out at a glance.
+      entry.flow && entry.flow !== 'repair'
+        ? h('span', { class: `board-card-flow flow-${entry.flow}` }, flowLabel(entry.flow))
+        : h('span', { class: 'board-card-status' }, statusLabel(entry.status)),
       h('span', { class: 'board-card-time' }, fmtRelative(entry.updatedAt)),
     ),
   );
@@ -685,7 +697,9 @@ function renderDrawer(entry) {
           partsSection,
           h('div', { class: 'drawer-section' },
             h('h4', {}, `Comments (${entry.comments?.length || 0})`),
-            commentList,
+            // Composer comes BEFORE the list so staff never have to scroll past
+            // a long history to post a new comment. Newest comments still
+            // appear at the top of the list below, right under the composer.
             h('div', { class: 'drawer-comment-form' },
               commentInput,
               h('div', { class: 'drawer-comment-actions' },
@@ -693,6 +707,7 @@ function renderDrawer(entry) {
                 h('button', { class: 'btn btn-primary', type: 'button', onclick: submitComment }, 'Post comment'),
               ),
             ),
+            commentList,
           ),
         ),
       ),

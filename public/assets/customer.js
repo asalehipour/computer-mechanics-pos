@@ -3,7 +3,7 @@
 // from their side; both sides sync live via the same `updateField` WS
 // message). Everything past intake is read-only.
 
-const CUSTOMER_JS_VERSION = '3.2.0';
+const CUSTOMER_JS_VERSION = '3.3.0';
 console.info(`[customer.js] loaded v${CUSTOMER_JS_VERSION}`);
 
 const $stage = document.getElementById('stage');

@@ -4,7 +4,7 @@
 // that the browser isn't serving a stale cached copy. If you're debugging
 // "why isn't my latest fix live?" — open DevTools, look for this line on
 // load. If it's older than expected, hard-refresh (⌘⇧R / Ctrl+Shift+R).
-const STAFF_JS_VERSION = '3.2.0';
+const STAFF_JS_VERSION = '3.3.0';
 console.info(`[staff.js] loaded v${STAFF_JS_VERSION}`);
 
 const $app = document.getElementById('app');

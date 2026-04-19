@@ -151,6 +151,21 @@ export interface BoardEntry {
    * entries load without it.
    */
   rush?: boolean;
+  /**
+   * Persistent copies of the customer's drop-off + pickup signatures. Captured
+   * on the customer screen during intake (drop_off) and the pickup flow
+   * (pick_up). Stored here so the receipt PDF can be regenerated at pickup
+   * with BOTH signatures embedded, even though drop_off was captured in a
+   * previous session (days/weeks earlier). Each is the raw PNG data URL
+   * (same shape as job.signatures.*).
+   *
+   * Optional so back-compat entries without this field load cleanly — the
+   * hydrate loop in ensureLoaded() backfills missing shapes.
+   */
+  signatures?: {
+    dropOff?: { dataUrl: string; signedAt: string } | null;
+    pickUp?:  { dataUrl: string; signedAt: string } | null;
+  };
 }
 
 /** Extract a display-friendly hostname from a URL. Returns '' if url is bad. */
@@ -232,6 +247,7 @@ async function ensureLoaded(): Promise<void> {
         if (!Array.isArray(e.attachments)) e.attachments = [];
         if (e.passwordRecordId === undefined) e.passwordRecordId = null;
         if (e.deviceIntent === undefined) e.deviceIntent = null;
+        if (!e.signatures) e.signatures = { dropOff: null, pickUp: null };
       }
       cache = arr;
     });
@@ -625,6 +641,67 @@ export async function addAttachment(
   await persist();
   emit();
   return attachment;
+}
+
+/**
+ * Replace every attachment of a given kind (typically 'receipt') with a fresh
+ * one. Used when the receipt PDF is regenerated after a signature is captured
+ * — the old version embedded an unsigned line that we don't want lingering.
+ * Deletes both the on-disk file and the metadata entry, then calls
+ * addAttachment to re-save.
+ */
+export async function replaceAttachmentsOfKind(
+  entryId: string,
+  kind: BoardAttachmentKind,
+  input: AddAttachmentInput,
+): Promise<BoardAttachment | null> {
+  await ensureLoaded();
+  const e = cache!.find(x => x.id === entryId);
+  if (!e) return null;
+  const doomed = (e.attachments || []).filter(a => a.kind === kind);
+  for (const a of doomed) {
+    try { await rm(attachmentPath(entryId, a.id), { force: true }); }
+    catch (err) { console.warn(`[job-board] Failed to remove old ${kind} file:`, err); }
+  }
+  e.attachments = (e.attachments || []).filter(a => a.kind !== kind);
+  // Persist the pruned list before adding — addAttachment's own persist()
+  // will follow with the new row. Keeps the metadata on disk consistent if
+  // the write crashes between the two steps.
+  await persist();
+  return addAttachment(entryId, input);
+}
+
+/**
+ * Look up a single entry by id. Used by the pickup flow so it can fold the
+ * drop-off signature stored on the original entry into the current job
+ * state before regenerating the receipt PDF.
+ */
+export async function getEntry(entryId: string): Promise<BoardEntry | null> {
+  await ensureLoaded();
+  return cache!.find(e => e.id === entryId) ?? null;
+}
+
+/**
+ * Save (or overwrite) a customer signature on the board entry. Used so the
+ * sig survives across sessions — needed to embed the drop_off signature in
+ * the pickup receipt weeks later.
+ */
+export async function saveEntrySignature(
+  entryId: string,
+  kind: 'drop_off' | 'pick_up',
+  dataUrl: string,
+  signedAt: string,
+): Promise<BoardEntry | null> {
+  await ensureLoaded();
+  const e = cache!.find(x => x.id === entryId);
+  if (!e) return null;
+  if (!e.signatures) e.signatures = { dropOff: null, pickUp: null };
+  const slot = kind === 'drop_off' ? 'dropOff' : 'pickUp';
+  e.signatures[slot] = { dataUrl, signedAt };
+  e.updatedAt = new Date().toISOString();
+  await persist();
+  emit();
+  return e;
 }
 
 /**
